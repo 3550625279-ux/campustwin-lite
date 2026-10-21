@@ -1,0 +1,8 @@
+* text=auto
+*.md text eol=lf
+*.hpp text eol=lf
+*.cpp text eol=lf
+*.csv text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+CMakeLists.txt text eol=lf
