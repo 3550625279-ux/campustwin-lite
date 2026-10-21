@@ -1,0 +1,28 @@
+name: build-and-data-check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Configure
+        run: cmake -S . -B build
+      - name: Build scaffold and modules
+        run: cmake --build build --config Debug --parallel 2
+      - name: Check sample data (not MVP behavior)
+        run: ctest --test-dir build -C Debug --output-on-failure
