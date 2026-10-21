@@ -1,0 +1,6 @@
+id,name,kind,capacity
+L_T1,Teaching building 1,Teaching,200
+L_T2,Teaching building 2,Teaching,200
+L_CANTEEN,Canteen,Canteen,100
+L_DORM,Dormitory,Dormitory,200
+L_LIBRARY,Library,Library,100
