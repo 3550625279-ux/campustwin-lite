@@ -1,0 +1,2 @@
+facility_id,window_count,observation_minutes,arrived,started,completed,max_queue_length,total_wait_minutes,mean_wait_minutes,busy_window_minutes,utilization
+F_CANTEEN,2,120,20,20,20,18,170,8.500000,40,0.166666667

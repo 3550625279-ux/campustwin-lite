@@ -1,0 +1,4 @@
+request_id,student_id,facility_id,at
+S001:lunch:1,S001,F_QUEUE_TEST,0
+S002:lunch:1,S002,F_QUEUE_TEST,0
+S003:lunch:1,S003,F_QUEUE_TEST,2

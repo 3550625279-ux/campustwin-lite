@@ -1,0 +1,7 @@
+at,type,request_id,student_id,facility_id,window_id,wait_minutes
+0,ServiceStarted,S001:lunch:1,S001,F_QUEUE_TEST,0,0
+2,ServiceCompleted,S001:lunch:1,S001,F_QUEUE_TEST,0,
+2,ServiceStarted,S002:lunch:1,S002,F_QUEUE_TEST,0,2
+4,ServiceCompleted,S002:lunch:1,S002,F_QUEUE_TEST,0,
+4,ServiceStarted,S003:lunch:1,S003,F_QUEUE_TEST,0,2
+6,ServiceCompleted,S003:lunch:1,S003,F_QUEUE_TEST,0,
