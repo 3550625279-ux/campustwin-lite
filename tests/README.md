@@ -1,6 +1,6 @@
 # 验证范围
 
-`validate_sample_data.py` 校验仓库中的固定配置、引用和手算参考。初始 CTest 只运行它；公共接口的一致性由 C++ 编译链接检验。当前没有声称业务测试通过。
+`validate_sample_data.py` 校验仓库中的固定配置、引用和手算参考。当前CTest同时运行它及新增的A环境、账号和真实控制台测试；公共接口的一致性由C++编译链接检验。A独立验收通过不代表B/C或整组仿真完成，详见[A交付说明](../docs/A_DELIVERY.md)。
 
 ```bash
 python3 tests/validate_sample_data.py

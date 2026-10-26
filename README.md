@@ -2,7 +2,7 @@
 
 基于 C++17 的校园群体行为与食堂资源仿真课程项目。三位成员分别实现校园环境、学生行为、资源服务，再在同一进程、同一时间轴内集成。
 
-**当前状态：初始化阶段。已有设计文档、公共头文件、可编译占位工程、样例配置和验收工具；A/B/C 业务与调度代码尚未实现，MVP 尚未完成。** 构建检查通过只表示骨架可编译、样例数据合法，不代表仿真已经跑通。
+**当前状态：A 独立最小版本已实现；B/C 业务与统一调度仍待实现，整组 MVP 尚未完成。** A 已支持本地账号、场景增删改、三份CSV保存/加载与最短路线查询。实现清单、接口兼容建议、演示步骤和测试见 [A 部分交付说明](docs/A_DELIVERY.md)。
 
 ## 第一次打开仓库
 
@@ -50,7 +50,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 只编译、不运行样例检查时，可在配置命令加 `-DBUILD_TESTING=OFF`，这样无需 Python；功能完成后的正式验收仍需按文档执行。
 
-构建目标：`campustwin`、`demo_a`、`demo_b`、`demo_c`。当前四个入口运行均会明确提示 `NOT_IMPLEMENTED` 并返回退出码 2，这是待实现标记。未来业务验收要求退出码 0，不能把占位入口算作完成。
+构建目标：`campustwin`、`demo_a`、`demo_b`、`demo_c`。`demo_a` 已实现，须从仓库根目录启动（Windows Debug 构建示例：`.\build\Debug\demo_a.exe`）；使用 `help` 查看命令。`campustwin`、`demo_b`、`demo_c` 仍提示 `NOT_IMPLEMENTED` 并返回 2。CTest现包含原样例校验及A的环境、账号、真实控制台验收。
 
 Linux/macOS 单配置生成器的入口一般在 `build/`；Windows Visual Studio 生成器一般在 `build/Debug/`。VS Code 或 CLion 可以打开仓库根目录的 CMake 工程。
 
@@ -78,4 +78,4 @@ Linux/macOS 单配置生成器的入口一般在 `build/`；Windows Visual Studi
 python3 tests/check_mvp_outputs.py outputs/mvp
 ```
 
-验收通过后才在 README 把状态改为“MVP 已完成”。第一阶段之后再补账号与权限、完整一天、更多设施和对照实验。课程最终交付要求见对应文档。
+验收通过后才在 README 把状态改为“MVP 已完成”。A 独立入口已补最小本地账号；角色权限、完整一天、更多设施和对照实验仍待后续实现。课程最终交付要求见对应文档。
