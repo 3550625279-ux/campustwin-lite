@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace campustwin 
+namespace campustwin {
 namespace {
 
 bool valid_id(const std::string& value) {
