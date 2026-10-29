@@ -1,6 +1,6 @@
 # B 学生模块：实现、运行与交接
 
-B 已实现 `read_student_specs` 与 `StudentEngine` 的全部现有接口。公共 `contracts.hpp` 不变；A、C、记录器和真实调度器仍待各自实现，整个项目尚不能作为完整仿真器验收。
+B 已实现 `read_student_specs` 与 `StudentEngine` 的全部现有接口。真实 A、C、记录器和调度器已联调；完整仿真命令与当前验收状态见 [README](../README.md)。
 
 ## 1. 先运行一个学生
 
@@ -29,6 +29,14 @@ Windows 多配置生成器使用 `build/Debug/demo_b.exe`。`--help` 查看参�
 | 14 起 | Finished | 返回宿舍，后续快照仍保留此人 |
 
 最终输出 `SUMMARY students=1 arrivals=1 finished=1`。将等待改为 0，完成返回应提前到 t=11；将 duration 改为 3，学生保留 Queued，`finished=0` 是正常截止结果。
+
+也可以用 `--all` 代替 `--student S001`，一次独立演示文件中的全部 20 名学生，并输出每人的时间轴：
+
+```bash
+./build/demo_b --students data/students/mvp.csv --all --wait 3 --duration 20
+```
+
+预期摘要为 `SUMMARY students=20 arrivals=20 finished=20`。每位学生的服务反馈独立由测试脚本生成，不模拟共享窗口的竞争；真实排队与等待结果请运行集成程序。
 
 ## 2. 按实现顺序阅读代码
 
@@ -62,7 +70,7 @@ Runner 先调用 `reset`。每分钟从 0 连续推进，不重复、不跳号�
 
 ## 4. 独立验证到哪里
 
-CTest 包含 3 项：样例数据合同、学生引擎行为、B 独立演示。行为测试包含 21 组用例，使用普通 C++17，无额外测试框架。
+CTest 包含样例数据合同、学生引擎行为和 B 的单人/20 人独立演示，另有 A、C 和联调测试。B 行为测试包含 21 组用例，使用普通 C++17，无额外测试框架。
 
 重点验证：
 
@@ -73,7 +81,7 @@ CTest 包含 3 项：样例数据合同、学生引擎行为、B 独立演示。
 - reset 清理旧运行；非法 reset 和路由失败不提交半份更新。
 - 20 人在 t=2/t=3 各到 10 人；使用外部手算服务事件后，全部 2420 条学生状态符合预期，t=29 全部返回。
 
-最后一项是 B 对固定外部事件的验证。测试脚本只放在 `tests/`，没有进入学生引擎。真实 C 排队、A 路线、四份输出和 `check_mvp_outputs.py` 仍需要联合验收。
+最后一项是 B 对固定外部事件的验证。测试脚本只放在 `tests/`，没有进入学生引擎。真实 C 排队、A 路线与四份输出由独立的 `integrated_mvp` 测试联合验收。
 
 ## 5. 实现取舍与交付边界
 
