@@ -174,7 +174,8 @@ void validate(const CampusScenario& scenario, const Context* source = nullptr) {
                 context, "facility must refer to an existing Canteen");
         require(facility.id != facility.location_id, context, "facility ID must differ from its location ID");
         require(facility_locations.insert(facility.location_id).second, context, "multiple facilities at one location");
-        require(facility.window_count > 0 && facility.window_count <= max_integer, context, "window_count must be 1..2147483647");
+        require(facility.window_count > 0 && facility.window_count <= max_facility_windows,
+                context, "window_count must be 1..100000");
         require(facility.service_minutes > 0, context, "service_minutes must be positive");
     }
 }
