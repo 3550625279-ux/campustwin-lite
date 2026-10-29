@@ -19,6 +19,7 @@ private:
     std::filesystem::path output_directory_;
     std::ofstream events_, students_, facilities_, summary_;
     bool begun_{false};
-    SimTime next_tick_{0}, duration_{0};
+    std::int64_t next_tick_{0};
+    SimTime duration_{0};
 };
 } // namespace campustwin

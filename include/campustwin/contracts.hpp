@@ -16,6 +16,8 @@ using LocationId = std::string;
 using FacilityId = std::string;
 using StudentId = std::string;
 using RequestId = std::string;
+// Shared input bound: A validates it before C allocates window state.
+inline constexpr std::size_t max_facility_windows = 100000;
 
 class ValidationError : public std::runtime_error {
 public:
