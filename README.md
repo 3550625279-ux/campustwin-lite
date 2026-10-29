@@ -2,7 +2,9 @@
 
 基于 C++17 的校园群体行为与食堂资源仿真课程项目。三位成员分别实现校园环境、学生行为、资源服务，再在同一进程、同一时间轴内集成。
 
-**当前状态：B 学生模块已实现，可独立演示与测试；A、C 和集成调度仍为占位，完整 MVP 尚未完成。** B 支持学生 CSV、移动到达、服务事件、就餐返回与快照；独立演示中的路线和单人服务脚本是明确标出的测试替身，不代表 A/C 已完成。
+**当前状态：A 环境模块和 B 学生模块已实现，可分别独立演示与测试；C 的资源和记录模块已有实现；统一调度尚未实现，完整 MVP 尚未完成。**
+
+A 支持本地账号、场景编辑、CSV 保存与加载以及最短路径查询，详见 [A 部分交付说明](docs/A_DELIVERY.md)。B 支持学生数据读取、移动、服务事件响应和状态快照，详见 [B 模块实现与使用](docs/11_B_STUDENT_MVP.md)。
 
 ## 第一次打开仓库
 
@@ -51,7 +53,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 只编译、不运行样例检查时，可在配置命令加 `-DBUILD_TESTING=OFF`，这样无需 Python；功能完成后的正式验收仍需按文档执行。
 
-构建目标：`campustwin`、`demo_a`、`demo_b`、`demo_c`；启用测试时另有 `student_engine_tests`。CTest 运行样例数据校验、B 的 21 组行为测试和独立演示。`campustwin`、`demo_a`、`demo_c` 仍提示 `NOT_IMPLEMENTED` 并返回 2；`demo_b` 已真实运行 B 模块，正常返回 0。
+构建目标：`campustwin`、`demo_a`、`demo_b`、`demo_c`。`demo_a` 和 `demo_b` 可独立运行；`campustwin` 和 `demo_c` 仍为占位入口。CTest 包含样例数据校验、A 的环境、账号和控制台测试，以及 B 的行为测试和独立演示。
 
 从仓库根目录运行 B 的独立演示：
 
@@ -59,7 +61,7 @@ ctest --test-dir build -C Debug --output-on-failure
 ./build/demo_b --students data/students/mvp.csv --student S001 --wait 3 --duration 20
 ```
 
-演示读取 20 人配置后仅运行 S001：t=2 到食堂、等待 3 分钟、t=5 开始服务、t=7 开始就餐、t=12 返回、t=14 到宿舍。`--help` 查看选项。它不写四份集成 CSV，也不调用尚未实现的 A/C 库。
+演示读取 20 人配置后仅运行 S001：t=2 到食堂、等待 3 分钟、t=5 开始服务、t=7 开始就餐、t=12 返回、t=14 到宿舍。`--help` 查看选项。这个演示使用路线和服务事件测试替身，不调用真实 A、C 模块，也不写四份集成 CSV。
 
 Linux/macOS 单配置生成器的入口一般在 `build/`；Windows Visual Studio 生成器一般在 `build/Debug/`。VS Code 或 CLion 可以打开仓库根目录的 CMake 工程。
 
@@ -87,4 +89,4 @@ Linux/macOS 单配置生成器的入口一般在 `build/`；Windows Visual Studi
 python3 tests/check_mvp_outputs.py outputs/mvp
 ```
 
-验收通过后才在 README 把状态改为“MVP 已完成”。第一阶段之后再补账号与权限、完整一天、更多设施和对照实验。课程最终交付要求见对应文档。
+验收通过后才在 README 把状态改为“MVP 已完成”。A 独立入口已补最小本地账号；角色权限、完整一天、更多设施和对照实验仍待后续实现。课程最终交付要求见对应文档。
