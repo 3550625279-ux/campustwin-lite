@@ -14,7 +14,7 @@ UTF-8 文本，无 BOM；第一行为固定表头；逗号分隔。首版字段�
 | --- | --- |
 | `locations.csv`: `id,name,kind,capacity` | kind 为 Teaching/Canteen/Dormitory/Library；capacity 是正整数 |
 | `roads.csv`: `from,to,distance_m` | 无向正距离道路；端点存在；不重复录入反向边 |
-| `facilities.csv`: `id,location_id,window_count,service_minutes` | 设施与地点分离；窗口数和服务时长均为正整数 |
+| `facilities.csv`: `id,location_id,window_count,service_minutes` | 设施与地点分离；窗口数为 1…100000，服务时长为正整数 |
 
 `replace_scenario` 与加载文件使用同一套校验。保存只写上述三份静态文件；学生配置归 B，运行结果不回写到场景。
 
