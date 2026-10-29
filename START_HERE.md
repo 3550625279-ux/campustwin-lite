@@ -38,7 +38,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-当前应当构建成功，样例数据和A业务测试通过。`demo_a`已实现账号、场景管理与路线查询，见[A交付说明](docs/A_DELIVERY.md)。执行`campustwin`、`demo_b`或`demo_c`仍输出`NOT_IMPLEMENTED`并返回2，整组MVP尚未完成。
+当前代码包含 A/B/C 独立演示和统一仿真入口；CTest 会运行真实联调及边界测试。`demo_a` 的账号、场景管理与路线查询见 [A 交付说明](docs/A_DELIVERY.md)，完整运行命令见 [README](README.md#运行完整仿真)。课程最终要求仍需团队核对。
 
 Linux/macOS 的常见路径为 `build/campustwin`；Windows 的 Visual Studio 生成器常见路径为 `build/Debug/campustwin.exe`。运行相对数据路径时，工作目录保持在仓库根目录。
 
@@ -52,7 +52,7 @@ Linux/macOS 的常见路径为 `build/campustwin`；Windows 的 Visual Studio �
 | B | 用固定路线查询替身完成学生移动与到达 | A 用 `IRouteProvider` 测试替身；C 暂不接 | t=2/t=3 各到达 10 人，每人只发一次到达 |
 | C | 实现三人单窗口队列用例 | 不依赖 B，直接读测试到达序列 | 开始/完成事件与手算序列一致 |
 
-第一次不必写完整个子系统。实现当前小任务，删除对应函数的 `not_implemented` 调用；其他未完成函数保留明确占位。一个函数不能既留着占位抛错，又在后面写永远到不了的业务逻辑。
+这些是初期任务的示例。现有 MVP 已实现；新的工作应从当前 `main` 出发，选择一个具体问题，保留独立演示并新增必要的验证。
 
 ## 5. 每人怎样提交
 
