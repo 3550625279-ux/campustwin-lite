@@ -59,11 +59,16 @@ writer.finish(C.summaries(duration))
 
 ## 实现后的命令
 
-以下 CLI 是目标约定，初始占位程序还不支持：
+B 的独立演示现在可运行，使用固定 MVP 路线替身和单学生服务脚本，不依赖 A/C：
+
+```bash
+./build/demo_b --students data/students/mvp.csv --student S001 --wait 3 --duration 20
+```
+
+该演示不读取 `--scenario`，只支持其帮助信息列出的选项。完整 B 行为也由 CTest 的 `student_engine_behavior` 验证。以下 A/C 与集成 CLI 仍是目标约定，占位程序尚不支持：
 
 ```bash
 ./build/demo_a --scenario data/scenarios/mvp
-./build/demo_b --scenario data/scenarios/mvp --students data/students/mvp.csv
 ./build/demo_c --facilities data/fixtures/resource_facilities.csv --arrivals data/fixtures/resource_arrivals.csv
 ./build/campustwin --scenario data/scenarios/mvp --students data/students/mvp.csv --duration 120 --output outputs/mvp
 python3 tests/check_mvp_outputs.py outputs/mvp

@@ -50,5 +50,13 @@ if(BUILD_TESTING)
     add_test(NAME a_accounts COMMAND test_accounts)
     add_test(NAME a_console COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_demo_a.py $<TARGET_FILE:demo_a> ${CMAKE_CURRENT_SOURCE_DIR})
-endif()
 # B/C integration and simulation/output tests remain to be implemented.
+    add_executable(student_engine_tests tests/student_engine_tests.cpp)
+    target_link_libraries(student_engine_tests PRIVATE campustwin_students)
+    add_test(NAME student_engine_behavior COMMAND student_engine_tests ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME student_demo COMMAND demo_b --students ${CMAKE_CURRENT_SOURCE_DIR}/data/students/mvp.csv
+        --student S001 --wait 3 --duration 20)
+    set_tests_properties(student_demo PROPERTIES PASS_REGULAR_EXPRESSION
+        "SUMMARY students=1 arrivals=1 finished=1")
+endif()
+# Add integrated simulation/output tests after A/C and the real runner exist.
