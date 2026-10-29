@@ -12,7 +12,7 @@
 4. 创建 B、C、结果记录器对象；把依赖以接口引用传给 `SimulationRunner::run`。
 5. Runner 依次调用 B.reset、C.reset、writer.begin，然后进入唯一时间循环。
 
-## 主循环伪代码（需要 A 自行实现）
+## 主循环与调用顺序
 
 ```text
 for t = 0 .. duration:
@@ -50,14 +50,14 @@ writer.finish(C.summaries(duration))
 
 | 门槛 | 动作 | 通过证据 |
 | --- | --- | --- |
-| G0 | 公共类型编译，样例校验通过 | build + ctest 通过；当前骨架只到这里 |
+| G0 | 公共类型编译，样例校验通过 | build + ctest 通过 |
 | G1 | A 与 B 接上，C 暂用替身 | 20 人 t=2/t=3 的真实到达事件 |
 | G2 | C 独立通过 3 人顺序样例 | 与 expected_events 的六条事件一致 |
 | G3 | 替换成真实 C，开始/完成事件返回 B | 各分钟队列与学生状态一致 |
 | G4 | 接 CSV 记录器，完整运行 120 分钟 | `check_mvp_outputs.py` 通过 |
 | G5 | 分别修改窗口数、路程再运行 | 因果变化合理；原基准仍通过 |
 
-## 实现后的命令
+## 运行命令
 
 B 的独立演示现在可运行，使用固定 MVP 路线替身和单学生服务脚本，不依赖 A/C：
 
@@ -65,7 +65,7 @@ B 的独立演示现在可运行，使用固定 MVP 路线替身和单学生服�
 ./build/demo_b --students data/students/mvp.csv --student S001 --wait 3 --duration 20
 ```
 
-该演示不读取 `--scenario`，只支持其帮助信息列出的选项。完整 B 行为也由 CTest 的 `student_engine_behavior` 验证。以下 A/C 与集成 CLI 仍是目标约定，占位程序尚不支持：
+该演示不读取 `--scenario`，只支持其帮助信息列出的选项。完整 B 行为也由 CTest 的 `student_engine_behavior` 验证。以下命令运行 A、C 的独立演示及真实集成程序：
 
 ```bash
 ./build/demo_a --scenario data/scenarios/mvp
@@ -80,4 +80,4 @@ Windows 的可执行路径按生成器换成 `build/Debug/campustwin.exe` 等；
 
 先合入 A/B/C 中已经独立验证的小任务，再合入 Runner 集成 PR。共享头文件由独立 PR 修改，避免三个长期分支分别修改其不同副本。合并后每位成员 `fetch` 并把 `origin/main` 合入自己的分支，然后重新构建。
 
-第一次闭环通过后，将业务运行和输出验证加入 CI；初始工作流尚未把占位应用算作业务测试。保留独立演示，避免集成改动后个人模块失去可验证入口。
+CTest 已加入真实业务运行、输出检查和变参测试，GitHub Actions 会在各平台执行这些测试。远端平台是否通过以 Actions 实际结果为准。保留独立演示，避免集成改动后个人模块失去可验证入口。
