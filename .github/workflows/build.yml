@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
       - name: Configure
         run: cmake -S . -B build
-      - name: Build scaffold and modules
+      - name: Build application and modules
         run: cmake --build build --config Debug --parallel 2
-      - name: Check sample data (not MVP behavior)
+      - name: Run module and integration tests
         run: ctest --test-dir build -C Debug --output-on-failure
