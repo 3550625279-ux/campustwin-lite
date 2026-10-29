@@ -38,7 +38,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-初始状态下应当构建成功，样例数据检查通过。执行 `campustwin` 或任一 demo 时，程序会输出 `NOT_IMPLEMENTED` 并返回 2：这表明该模块还等着成员实现，是预期的占位行为。
+当前应当构建成功，样例数据和A业务测试通过。`demo_a`已实现账号、场景管理与路线查询，见[A交付说明](docs/A_DELIVERY.md)。执行`campustwin`、`demo_b`或`demo_c`仍输出`NOT_IMPLEMENTED`并返回2，整组MVP尚未完成。
 
 Linux/macOS 的常见路径为 `build/campustwin`；Windows 的 Visual Studio 生成器常见路径为 `build/Debug/campustwin.exe`。运行相对数据路径时，工作目录保持在仓库根目录。
 
