@@ -134,6 +134,7 @@ void test_routes_and_validation(const fs::path& root) {
     rejected([](auto& s) { s.facilities.front().location_id = "missing"; });
     rejected([](auto& s) { s.facilities.front().location_id = "L_T1"; });
     rejected([](auto& s) { s.facilities.front().window_count = 0; });
+    rejected([](auto& s) { s.facilities.front().window_count = campustwin::max_facility_windows + 1; });
     rejected([](auto& s) { s.facilities.front().service_minutes = 0; });
     rejected([](auto& s) { s.facilities.front().service_minutes = -1; });
     rejected([](auto& s) { s.facilities.push_back(s.facilities.front()); });
