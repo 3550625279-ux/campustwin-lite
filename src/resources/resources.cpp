@@ -56,7 +56,7 @@ void FacilityEngine::reset(const std::vector<FacilityConfig>& configs) {
     for (const auto& config : configs) {
         if (!valid_id(config.id) || !valid_id(config.location_id) ||
             config.id == config.location_id || config.window_count == 0 ||
-            config.window_count > 100000 || config.service_minutes <= 0) {
+            config.window_count > max_facility_windows || config.service_minutes <= 0) {
             throw ValidationError("C: invalid facility configuration");
         }
 
