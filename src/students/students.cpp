@@ -6,6 +6,7 @@
 #include <fstream>
 #include <limits>
 #include <map>
+#include <set>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
@@ -18,6 +19,7 @@ constexpr std::string_view student_header =
     "id,initial_location,lunch_facility,after_meal_location,"
     "departure_minute,walk_m_per_min,meal_minutes";
 const std::string student_header_with_policy = std::string(student_header) + ",lunch_policy";
+const std::string student_header_with_meal = student_header_with_policy + ",meal_type";
 
 [[noreturn]] void invalid(const std::string& context, const std::string& message) {
     throw ValidationError(context + ": " + message);
@@ -40,6 +42,7 @@ void check_spec(const StudentSpec& spec, const std::string& context) {
         spec.lunch_policy != LunchPolicy::Fastest)
         invalid(context, "unknown lunch policy");
     check_id(spec.after_meal_location, context + " after_meal_location");
+    check_id(spec.meal_type, context + " meal_type");
     if (spec.departure_minute < 0) invalid(context, "departure_minute must be nonnegative");
     if (!std::isfinite(spec.walk_m_per_min) || spec.walk_m_per_min <= 0.0)
         invalid(context, "walk_m_per_min must be finite and positive");
@@ -119,7 +122,8 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
     std::string line;
     if (!std::getline(input, line)) invalid(file.u8string() + ":1", "missing header");
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    const bool has_policy = line == student_header_with_policy;
+    const bool has_meal = line == student_header_with_meal;
+    const bool has_policy = has_meal || line == student_header_with_policy;
     if (!has_policy && line != student_header)
         invalid(file.u8string() + ":1", "unexpected student CSV header");
 
@@ -131,12 +135,13 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         const auto context = file.u8string() + ":" + std::to_string(line_number);
-        const auto fields = split_row(line, context, has_policy ? 8 : 7);
+        const auto fields = split_row(line, context, has_meal ? 9 : has_policy ? 8 : 7);
         StudentSpec spec{fields[0], fields[1], fields[2], fields[3],
                          parse_time(fields[4], 0, context + " departure_minute"),
                          parse_speed(fields[5], context + " walk_m_per_min"),
                          parse_time(fields[6], 1, context + " meal_minutes")};
         if (has_policy) spec.lunch_policy = parse_policy(fields[7], context);
+        if (has_meal) spec.meal_type = fields[8];
         check_spec(spec, context);
         if (!ids.insert(spec.id).second) invalid(context, "duplicate student ID: " + spec.id);
         result.push_back(std::move(spec));
@@ -160,8 +165,19 @@ void StudentEngine::reset(const CampusScenario& scenario,
         const auto location = locations.find(facility.location_id);
         if (location == locations.end() || location->second != LocationKind::Canteen)
             invalid("facility " + facility.id, "must refer to an existing canteen location");
-        if (facility.window_count == 0 || facility.service_minutes <= 0)
+        if (facility.window_count == 0 || facility.window_count > max_facility_windows || facility.service_minutes <= 0)
             invalid("facility " + facility.id, "window count and service duration must be positive");
+        std::set<std::pair<std::size_t, std::string>> offerings;
+        std::set<std::size_t> covered_windows;
+        for (const auto& service : facility.window_services) {
+            if (service.meal_type != "*") check_id(service.meal_type, "facility meal_type");
+            if (service.window_id >= facility.window_count || service.service_minutes <= 0 ||
+                !offerings.emplace(service.window_id, service.meal_type).second)
+                invalid("facility " + facility.id, "invalid or duplicate window service");
+            covered_windows.insert(service.window_id);
+        }
+        if (!facility.window_services.empty() && covered_windows.size() != facility.window_count)
+            invalid("facility " + facility.id, "every window must offer a service");
         if (!facilities.emplace(facility.id, facility).second ||
             !facility_locations.insert(facility.location_id).second)
             invalid("scenario", "duplicate facility ID or canteen location");
@@ -181,6 +197,8 @@ void StudentEngine::reset(const CampusScenario& scenario,
             invalid(context, "lunch facility is unknown");
         if (spec.lunch_policy == LunchPolicy::Fixed && facility == facilities.end())
             invalid(context, "fixed lunch facility is unknown");
+        if (spec.lunch_policy == LunchPolicy::Fixed && !facility_serves(facility->second, spec.meal_type))
+            invalid(context, "fixed lunch facility cannot serve requested meal");
         if (spec.lunch_policy == LunchPolicy::Fixed &&
             (spec.initial_location == facility->second.location_id ||
              spec.after_meal_location == facility->second.location_id))
@@ -276,7 +294,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                     decision.policy = student.spec.lunch_policy;
                     decision.facility_id = config.id;
                     decision.destination = config.location_id;
-                    decision.service_minutes = config.service_minutes;
+                    if (config.window_services.empty()) decision.service_minutes = config.service_minutes;
                     if (advisor) {
                         const auto& status = status_by_id.at(config.id);
                         decision.observed_at = status.observed_at;
@@ -285,6 +303,11 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                     if (*student.location == config.location_id ||
                         student.spec.after_meal_location == config.location_id) {
                         decision.reason = "invalid_endpoint";
+                        next_decisions.push_back(std::move(decision));
+                        continue;
+                    }
+                    if (!facility_serves(config, student.spec.meal_type)) {
+                        decision.reason = "meal_unavailable";
                         next_decisions.push_back(std::move(decision));
                         continue;
                     }
@@ -305,13 +328,17 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                     decision.path = route.path;
                     decision.travel_minutes = travel;
                     if (advisor) {
-                        decision.estimated_wait_minutes = advisor->estimate_wait(config.id, arrival);
+                        const auto estimate = advisor->estimate_service(config.id, arrival, student.spec.meal_type);
+                        if (!estimate) invalid("student decisions", "advisor rejected a configured meal");
+                        decision.estimated_wait_minutes = estimate->wait_minutes;
+                        decision.service_minutes = estimate->service_minutes;
                         if (*decision.estimated_wait_minutes < 0 ||
+                            *decision.service_minutes <= 0 ||
                             *decision.estimated_wait_minutes > std::numeric_limits<std::int64_t>::max() -
-                                static_cast<std::int64_t>(travel) - config.service_minutes)
+                                static_cast<std::int64_t>(travel) - *decision.service_minutes)
                             invalid("student decisions", "invalid or overflowing wait estimate");
                         decision.estimated_total_minutes = static_cast<std::int64_t>(travel) +
-                            *decision.estimated_wait_minutes + config.service_minutes;
+                            *decision.estimated_wait_minutes + *decision.service_minutes;
                     }
                     decision.reason = "not_selected";
                     next_decisions.push_back(std::move(decision));
@@ -350,7 +377,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                     student.state = StudentState::Queued;
                     student.arrived_at = now;
                     arrivals.push_back({student.request_id, student.spec.id,
-                                        student.selected_facility, now});
+                                        student.selected_facility, now, student.spec.meal_type});
                 }
             }
             break;
@@ -388,7 +415,17 @@ void StudentEngine::on_service_started(const ServiceStarted& event) {
     if (event.window_id >= student.window_count || event.at < *student.arrived_at ||
         event.wait_minutes < 0 || event.wait_minutes != event.at - *student.arrived_at)
         invalid("service start", "invalid window, timestamp or waiting duration");
-    checked_add(event.at, student.service_minutes, "service start");
+    const auto config = std::find_if(facility_configs_.begin(), facility_configs_.end(),
+        [&](const auto& f) { return f.id == student.selected_facility; });
+    if (config == facility_configs_.end()) invalid("service start", "unknown facility");
+    const auto duration = window_service_time(*config, event.window_id, student.spec.meal_type);
+    if (!duration || (!event.meal_type.empty() && event.meal_type != student.spec.meal_type))
+        invalid("service start", "window or meal does not match requested service");
+    const auto end = checked_add(event.at, *duration, "service start");
+    if ((event.expected_end_at && *event.expected_end_at != end) ||
+        (!event.expected_end_at && !config->window_services.empty()))
+        invalid("service start", "service end time does not match assigned window");
+    student.service_minutes = *duration;
     student.service = event;
     student.state = StudentState::InService;
 }
