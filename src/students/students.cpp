@@ -101,11 +101,11 @@ MoveInfo plan_move(const IRouteProvider& routes, const LocationId& from,
 
 std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
     std::ifstream input(file);
-    if (!input) throw std::runtime_error("cannot open student file: " + file.string());
+    if (!input) throw std::runtime_error("cannot open student file: " + file.u8string());
     std::string line;
-    if (!std::getline(input, line)) invalid(file.string() + ":1", "missing header");
+    if (!std::getline(input, line)) invalid(file.u8string() + ":1", "missing header");
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line != student_header) invalid(file.string() + ":1", "unexpected student CSV header");
+    if (line != student_header) invalid(file.u8string() + ":1", "unexpected student CSV header");
 
     std::vector<StudentSpec> result;
     std::unordered_set<StudentId> ids;
@@ -114,7 +114,7 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
         ++line_number;
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
-        const auto context = file.string() + ":" + std::to_string(line_number);
+        const auto context = file.u8string() + ":" + std::to_string(line_number);
         const auto fields = split_row(line, context);
         StudentSpec spec{fields[0], fields[1], fields[2], fields[3],
                          parse_time(fields[4], 0, context + " departure_minute"),
@@ -124,7 +124,7 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
         if (!ids.insert(spec.id).second) invalid(context, "duplicate student ID: " + spec.id);
         result.push_back(std::move(spec));
     }
-    if (input.bad()) throw std::runtime_error("error reading student file: " + file.string());
+    if (input.bad()) throw std::runtime_error("error reading student file: " + file.u8string());
     return result;
 }
 
