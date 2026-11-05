@@ -1,10 +1,42 @@
 # CampusTwin Lite
 
-基于 C++17 的校园群体行为与食堂资源仿真课程项目。三位成员分别实现校园环境、学生行为、资源服务，再在同一进程、同一时间轴内集成。
+基于 C++17 的校园午餐出行与服务仿真项目。学生从不同地点按各自速度前往指定食堂，经过排队、窗口服务、就餐后返回；程序记录路线、到达、队列和服务情况。
 
-**当前状态：A、B、C 的午餐仿真功能和各自的独立演示已实现，统一程序已接通并通过本地 MVP 自动验收。** 团队成员对代码和算法的理解、角色权限等课程最终交付要求仍需人工完成和核对。
+**当前提供两个可运行场景：**原始 20 人、单食堂 MVP 基准，以及 40 人、双食堂午餐场景。双食堂场景附带窗口数量和步行速度对照实验，可生成 CSV 与本地 HTML 图表报告。所有场景都是合成数据。
+
+程序由校园环境、学生行为和食堂资源三个模块组成，由统一调度器连接。食堂目前由学生配置预先指定，还没有动态选食堂、自行车或完整一天的日程。
 
 A 支持本地账号、场景编辑、CSV 保存与加载以及最短路径查询，详见 [A 部分交付说明](docs/A_DELIVERY.md)。B 支持学生数据读取、移动、服务事件响应和状态快照，详见 [B 模块实现与使用](docs/11_B_STUDENT_MVP.md)。
+
+## 快速运行双食堂实验
+
+需要 C++17 编译器、CMake 3.16+ 和 Python 3.9+；运行和报告不需要额外 Python 包。在仓库根目录执行：
+
+```bash
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+python3 tools/run_lunch_experiments.py --executable build/campustwin --output outputs/lunch_demo
+```
+
+最后一条适用于 Linux/macOS 的单配置构建。Windows PowerShell 使用对应的程序路径，例如 Visual Studio 生成器：
+
+```powershell
+py -3 tools/run_lunch_experiments.py --executable .\build\Debug\campustwin.exe --output .\outputs\lunch_demo
+Start-Process .\outputs\lunch_demo\report.html
+```
+
+使用 Ninja/MinGW 等单配置生成器时，Windows 可执行文件一般是 `.\build\campustwin.exe`。Linux/macOS 可在文件管理器中打开 `outputs/lunch_demo/report.html`。实验会保留每组输入和原始结果；**输出目录必须不存在**，再次运行请换一个目录。
+
+默认实验包括基准、近食堂 2→3 个窗口、全部学生速度 60→120 米/分钟三组；比较时只有指定变量改变。报告列出各食堂的等待、排队、利用率、出发到开始吃饭所需时间，并展示实际路线和逐分钟队列。详细说明、指标口径及自定义参数见 [双食堂实验指南](docs/13_LUNCH_EXPERIMENTS.md)。
+
+也可以只查一条路线，输出由 A 模块计算的距离与路径：
+
+```bash
+./build/campustwin --scenario data/scenarios/two_canteens --route L_T1 L_FAR
+```
+
+输出为 `L_T1 → L_LIBRARY → L_FAR`，总距离 240 米。Windows 把可执行文件换成上面对应的 `.exe` 路径即可。
 
 ## 第一次打开仓库
 
@@ -34,7 +66,7 @@ A 支持本地账号、场景编辑、CSV 保存与加载以及最短路径查�
 | 学会分支、push、PR 与合并 | [贡献指南](CONTRIBUTING.md) |
 | 对照最初的讨论 | [原始分工 v0.1](docs/reference/original_v0.1.md) |
 
-## 第一阶段的产品
+## 原始 MVP 基准
 
 固定 20 名学生、2 栋教学楼、1 间食堂、1 栋宿舍、1 座图书馆；先完成一次午餐行为链：
 
