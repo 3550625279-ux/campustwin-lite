@@ -12,7 +12,7 @@
 // Draft v0.1. Units and event semantics are defined in docs/04_API_CONTRACT.md.
 namespace campustwin {
 
-using SimTime = std::int32_t;  // integer minutes since 12:00
+using SimTime = std::int32_t;  // minutes from scenario start; legacy lunch uses 12:00
 using LocationId = std::string;
 using FacilityId = std::string;
 using StudentId = std::string;
@@ -26,8 +26,23 @@ public:
 };
 
 enum class LocationKind { Teaching, Canteen, Dormitory, Library };
-enum class StudentState { AtLocation, Moving, Queued, InService, Eating, Finished };
+enum class StudentState { AtLocation, Moving, Queued, InService, Eating, Finished, WaitingSeat, InActivity };
 enum class LunchPolicy { Fixed, Nearest, Fastest };
+enum class ActivityKind { Class, Study, Rest, Lunch };
+
+struct ActivitySpec {
+    std::string id;
+    ActivityKind kind{ActivityKind::Study};
+    LocationId location_id; // empty for lunch: chosen by the student's lunch policy
+    SimTime start_minute{0}; // appointment start; for lunch, earliest departure
+    SimTime duration_minutes{1}; // occupancy duration; for lunch, eating duration
+    bool requires_seat{false}; // lunch automatically uses its canteen's seat pool if present
+};
+
+struct SeatPoolConfig {
+    LocationId location_id;
+    std::size_t capacity{1};
+};
 
 struct Location {
     LocationId id;
@@ -84,6 +99,7 @@ struct CampusScenario {
     std::vector<Location> locations;
     std::vector<Road> roads;
     std::vector<FacilityConfig> facilities;
+    std::vector<SeatPoolConfig> seat_pools{};
 };
 
 struct RouteInfo {
@@ -102,6 +118,7 @@ struct StudentSpec {
     SimTime meal_minutes{5};
     LunchPolicy lunch_policy{LunchPolicy::Fixed};
     std::string meal_type{"standard"};
+    std::vector<ActivitySpec> activities{}; // empty preserves the original lunch-and-return flow
 };
 
 struct SimulationSettings {
@@ -151,6 +168,36 @@ struct StudentSnapshot {
     std::optional<LocationId> location_id;  // absent iff Moving
     std::optional<MoveInfo> move;           // present iff Moving
     std::optional<FacilityId> lunch_facility{}; // actual choice, once made
+    std::optional<LocationId> occupied_seat{};
+};
+
+struct SeatRequest {
+    RequestId request_id;
+    StudentId student_id;
+    LocationId location_id;
+    SimTime at{0};
+    SimTime duration_minutes{1};
+};
+struct SeatGranted {
+    SeatRequest request;
+    SimTime at{0};
+    SimTime until{0};
+};
+struct SeatSnapshot {
+    SimTime at{0};
+    LocationId location_id;
+    std::size_t capacity{0}, queued{0}, occupied{0}, arrived{0}, granted{0}, released{0};
+    std::size_t max_queue{0};
+    std::int64_t total_wait_minutes{0}, busy_seat_minutes{0};
+};
+struct ActivityRecord {
+    StudentId student_id;
+    ActivitySpec activity;
+    LocationId destination;
+    std::optional<SimTime> departed_at, arrived_at, started_at, completed_at;
+    double distance_m{0};
+    std::vector<LocationId> path;
+    SimTime seat_wait_minutes{0};
 };
 
 // A frozen, end-of-minute view. At -1 it represents the initial empty state.
@@ -260,6 +307,9 @@ public:
         (void)now;
         return {};
     }
+    virtual std::vector<SeatRequest> seat_requests(SimTime now) const { (void)now; return {}; }
+    virtual void on_seat_granted(const SeatGranted&) { throw ValidationError("student engine does not support seats"); }
+    virtual std::vector<ActivityRecord> activity_records() const { return {}; }
     virtual void on_service_started(const ServiceStarted& event) = 0;
     virtual void on_service_completed(const ServiceCompleted& event) = 0;
     virtual std::vector<StudentSnapshot> snapshots(SimTime now) const = 0;
@@ -295,6 +345,22 @@ public:
         (void)decisions;
     }
     virtual void finish(const std::vector<FacilitySummary>& facilities) = 0;
+    virtual void write_seats(SimTime now, const std::vector<SeatRequest>& requests,
+                            const std::vector<SeatGranted>& grants,
+                            const std::vector<SeatSnapshot>& seats) {
+        (void)now; (void)requests; (void)grants; (void)seats;
+    }
+    virtual void write_activities(const std::vector<ActivityRecord>& records) { (void)records; }
+};
+
+class ISeatEngine {
+public:
+    virtual ~ISeatEngine() = default;
+    virtual void reset(const std::vector<SeatPoolConfig>& pools) = 0;
+    virtual void release_due(SimTime now) = 0;
+    virtual void enqueue(const std::vector<SeatRequest>& requests, SimTime now) = 0;
+    virtual std::vector<SeatGranted> start_ready(SimTime now) = 0;
+    virtual std::vector<SeatSnapshot> snapshots(SimTime now) const = 0;
 };
 
 }  // namespace campustwin
