@@ -73,6 +73,9 @@ if(BUILD_TESTING)
     add_executable(resource_engine_tests tests/resource_engine_tests.cpp)
     target_link_libraries(resource_engine_tests PRIVATE campustwin_resources)
     add_test(NAME resource_engine_behavior COMMAND resource_engine_tests)
+    add_executable(complex_service_tests tests/complex_service_tests.cpp)
+    target_link_libraries(complex_service_tests PRIVATE campustwin_resources campustwin_students)
+    add_test(NAME complex_service_behavior COMMAND complex_service_tests)
     add_executable(reporting_tests tests/reporting_tests.cpp)
     target_link_libraries(reporting_tests PRIVATE campustwin_reporting)
     add_test(NAME reporting_behavior COMMAND reporting_tests)
@@ -84,6 +87,9 @@ if(BUILD_TESTING)
         $<TARGET_FILE:campustwin> $<TARGET_FILE:demo_c> $<TARGET_FILE:demo_b> ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME lunch_experiments COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lunch_experiments.py
+        $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME complex_service_integration COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_complex_services.py
         $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME dynamic_lunch_decisions COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dynamic_decisions.py
