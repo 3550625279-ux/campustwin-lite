@@ -20,6 +20,7 @@ foreach(module environment students resources reporting simulation)
 endforeach()
 
 target_sources(campustwin_environment PRIVATE src/environment/accounts.cpp)
+target_sources(campustwin_resources PRIVATE src/resources/seats.cpp)
 add_executable(campustwin app/main.cpp)
 target_link_libraries(campustwin PRIVATE campustwin_environment campustwin_students
     campustwin_resources campustwin_reporting campustwin_simulation)
@@ -93,5 +94,17 @@ if(BUILD_TESTING)
         $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME dynamic_lunch_decisions COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dynamic_decisions.py
+        $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_executable(seat_engine_tests tests/seat_engine_tests.cpp)
+    target_link_libraries(seat_engine_tests PRIVATE campustwin_resources)
+    add_test(NAME seat_engine_behavior COMMAND seat_engine_tests)
+    add_test(NAME activity_schedule_integration COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_schedules.py
+        $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_executable(activity_contract_tests tests/activity_contract_tests.cpp)
+    target_link_libraries(activity_contract_tests PRIVATE campustwin_students campustwin_environment)
+    add_test(NAME activity_contracts COMMAND activity_contract_tests ${CMAKE_CURRENT_BINARY_DIR})
+    add_test(NAME all_stage_experiments COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_all_stages.py
         $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
