@@ -9,6 +9,7 @@ namespace campustwin {
 class FacilityEngine final : public IFacilityEngine {
 public:
     void reset(const std::vector<FacilityConfig>& facilities) override;
+    std::unique_ptr<IFacilityAdvisor> decision_snapshot() const override;
     std::vector<ServiceCompleted> complete_due(SimTime now) override;
     void enqueue(const std::vector<StudentArrival>& arrivals, SimTime now) override;
     std::vector<ServiceStarted> start_ready(SimTime now) override;

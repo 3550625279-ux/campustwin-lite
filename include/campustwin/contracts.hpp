@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,7 @@ public:
 
 enum class LocationKind { Teaching, Canteen, Dormitory, Library };
 enum class StudentState { AtLocation, Moving, Queued, InService, Eating, Finished };
+enum class LunchPolicy { Fixed, Nearest, Fastest };
 
 struct Location {
     LocationId id;
@@ -67,6 +69,7 @@ struct StudentSpec {
     SimTime departure_minute{0};
     double walk_m_per_min{60.0};
     SimTime meal_minutes{5};
+    LunchPolicy lunch_policy{LunchPolicy::Fixed};
 };
 
 struct SimulationSettings {
@@ -111,6 +114,37 @@ struct StudentSnapshot {
     StudentState state{StudentState::AtLocation};
     std::optional<LocationId> location_id;  // absent iff Moving
     std::optional<MoveInfo> move;           // present iff Moving
+    std::optional<FacilityId> lunch_facility{}; // actual choice, once made
+};
+
+// A frozen, end-of-minute view. At -1 it represents the initial empty state.
+struct FacilityDecisionStatus {
+    FacilityId facility_id;
+    LocationId location_id;
+    SimTime observed_at{-1};
+    std::size_t queue_length{0};
+    std::size_t in_service{0};
+    std::size_t window_count{0};
+    SimTime service_minutes{0};
+};
+
+// One row per evaluated candidate; estimates assume no subsequent arrivals.
+struct LunchDecision {
+    SimTime at{0};
+    StudentId student_id;
+    LunchPolicy policy{LunchPolicy::Fixed};
+    FacilityId facility_id;
+    LocationId destination;
+    SimTime observed_at{-1};
+    std::optional<std::size_t> queue_length;
+    std::optional<double> distance_m;
+    std::vector<LocationId> path;
+    std::optional<SimTime> travel_minutes;
+    std::optional<std::int64_t> estimated_wait_minutes;
+    std::optional<SimTime> service_minutes;
+    std::optional<std::int64_t> estimated_total_minutes;
+    bool selected{false};
+    std::string reason;
 };
 
 struct FacilitySnapshot {
@@ -154,6 +188,14 @@ public:
     virtual const CampusScenario& scenario() const = 0;
 };
 
+class IFacilityAdvisor {
+public:
+    virtual ~IFacilityAdvisor() = default;
+    virtual std::vector<FacilityDecisionStatus> statuses() const = 0;
+    // FCFS estimate using the frozen queue and window release times only.
+    virtual std::int64_t estimate_wait(const FacilityId& facility, SimTime arrival_at) const = 0;
+};
+
 class IStudentEngine {
 public:
     virtual ~IStudentEngine() = default;
@@ -161,6 +203,15 @@ public:
                        const std::vector<StudentSpec>& population) = 0;
     virtual std::vector<StudentArrival> tick(SimTime now,
                                             const IRouteProvider& routes) = 0;
+    virtual std::vector<StudentArrival> tick(SimTime now, const IRouteProvider& routes,
+                                            const IFacilityAdvisor* advisor) {
+        (void)advisor;
+        return tick(now, routes);
+    }
+    virtual std::vector<LunchDecision> decisions(SimTime now) const {
+        (void)now;
+        return {};
+    }
     virtual void on_service_started(const ServiceStarted& event) = 0;
     virtual void on_service_completed(const ServiceCompleted& event) = 0;
     virtual std::vector<StudentSnapshot> snapshots(SimTime now) const = 0;
@@ -170,6 +221,7 @@ class IFacilityEngine {
 public:
     virtual ~IFacilityEngine() = default;
     virtual void reset(const std::vector<FacilityConfig>& facilities) = 0;
+    virtual std::unique_ptr<IFacilityAdvisor> decision_snapshot() const { return {}; }
     virtual std::vector<ServiceCompleted> complete_due(SimTime now) = 0;
     virtual void enqueue(const std::vector<StudentArrival>& arrivals,
                          SimTime now) = 0;
@@ -190,6 +242,10 @@ public:
         const std::vector<ServiceStarted>& started,
         const std::vector<StudentSnapshot>& students,
         const std::vector<FacilitySnapshot>& facilities) = 0;
+    virtual void write_decisions(SimTime now, const std::vector<LunchDecision>& decisions) {
+        (void)now;
+        (void)decisions;
+    }
     virtual void finish(const std::vector<FacilitySummary>& facilities) = 0;
 };
 

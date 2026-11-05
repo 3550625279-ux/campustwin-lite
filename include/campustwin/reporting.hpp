@@ -15,11 +15,13 @@ public:
                     const std::vector<StudentSnapshot>& students,
                     const std::vector<FacilitySnapshot>& facilities) override;
     void finish(const std::vector<FacilitySummary>& facilities) override;
+    void write_decisions(SimTime now, const std::vector<LunchDecision>& decisions) override;
 private:
     std::filesystem::path output_directory_;
-    std::ofstream events_, students_, facilities_, summary_;
+    std::ofstream events_, students_, facilities_, summary_, decisions_;
     bool begun_{false};
     std::int64_t next_tick_{0};
+    std::int64_t last_decision_tick_{-1};
     SimTime duration_{0};
 };
 } // namespace campustwin
