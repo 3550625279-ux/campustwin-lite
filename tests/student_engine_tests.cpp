@@ -195,6 +195,30 @@ int main(int argc, char* argv[]) {
         rejects([&] { engine.on_service_started(start_at()); });
         rejects([&] { engine.on_service_completed(complete_at()); });
     });
+    test("dynamic decisions reject missing, stale or invalid views without advancing", [&] {
+        struct Advisor final : IFacilityAdvisor {
+            SimTime observed{-1};
+            std::int64_t wait{0};
+            std::vector<FacilityDecisionStatus> statuses() const override {
+                return {{"F_CANTEEN", "L_CANTEEN", observed, 0, 0, 2, 2}};
+            }
+            std::int64_t estimate_wait(const FacilityId&, SimTime) const override { return wait; }
+        } advisor;
+        StudentEngine engine; Routes routes;
+        auto person = spec(); person.lunch_policy = LunchPolicy::Fastest;
+        engine.reset(scene(), {person});
+        rejects([&] { engine.tick(0, routes); });
+        advisor.observed = -2;
+        rejects([&] { engine.tick(0, routes, &advisor); });
+        advisor.observed = -1; advisor.wait = -1;
+        rejects([&] { engine.tick(0, routes, &advisor); });
+        advisor.wait = 0;
+        require(engine.tick(0, routes, &advisor).empty(), "retry after invalid view failed");
+        const auto decisions = engine.decisions(0);
+        require(decisions.size() == 1 && decisions[0].selected &&
+                decisions[0].estimated_total_minutes == 4 &&
+                engine.snapshots(0)[0].lunch_facility == "F_CANTEEN", "incorrect dynamic retry");
+    });
     test("scheduled departure, ceil travel and one arrival request", [&] {
         StudentEngine engine; Routes routes; routes.t1 = 121.0;
         auto student = spec(); student.departure_minute = 2;

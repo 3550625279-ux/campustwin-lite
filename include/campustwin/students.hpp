@@ -10,12 +10,16 @@ public:
     void reset(const CampusScenario& scenario,
                const std::vector<StudentSpec>& population) override;
     std::vector<StudentArrival> tick(SimTime now, const IRouteProvider& routes) override;
+    std::vector<StudentArrival> tick(SimTime now, const IRouteProvider& routes,
+                                    const IFacilityAdvisor* advisor) override;
+    std::vector<LunchDecision> decisions(SimTime now) const override;
     void on_service_started(const ServiceStarted& event) override;
     void on_service_completed(const ServiceCompleted& event) override;
     std::vector<StudentSnapshot> snapshots(SimTime now) const override;
 private:
     struct StudentRuntime {
         StudentSpec spec;
+        FacilityId selected_facility;
         LocationId canteen_location;
         SimTime service_minutes{0};
         std::size_t window_count{0};
@@ -35,6 +39,8 @@ private:
     // reset sorts by ID, so events and snapshots do not depend on CSV row order.
     std::vector<StudentRuntime> students_;
     std::unordered_map<StudentId, std::size_t> student_indices_;
+    std::vector<FacilityConfig> facility_configs_;
+    std::vector<LunchDecision> decisions_;
     bool initialized_{false};
     SimTime last_tick_{-1};
     // Completions for t arrive before tick(t); snapshots of t-1 are then stale.

@@ -16,10 +16,11 @@
 
 ```text
 for t = 0 .. duration:
+    advisor = C.decision_snapshot()  # t-1 阶段末；t=0 使用初始状态
     completed = C.complete_due(t)
     for each completed: B.on_service_completed(event)
 
-    arrivals = B.tick(t, A)
+    arrivals = B.tick(t, A, advisor)
     C.enqueue(arrivals, t)
 
     started = C.start_ready(t)
@@ -29,6 +30,7 @@ for t = 0 .. duration:
     facilities = C.snapshots(t)
     检查跨模块状态守恒
     writer.write_tick(t, completed, arrivals, started, students, facilities)
+    writer.write_decisions(t, B.decisions(t))
 
 writer.finish(C.summaries(duration))
 ```

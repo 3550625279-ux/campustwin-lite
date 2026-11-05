@@ -85,4 +85,7 @@ if(BUILD_TESTING)
     add_test(NAME lunch_experiments COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lunch_experiments.py
         $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME dynamic_lunch_decisions COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dynamic_decisions.py
+        $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

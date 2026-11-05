@@ -27,7 +27,7 @@ id,initial_location,lunch_facility,after_meal_location,departure_minute,walk_m_p
 S001,L_T1,F_CANTEEN,L_DORM,0,60,5
 ```
 
-ID 唯一；起点/后续地点、午餐设施必须存在；departure_minute 为非负整数；速度、就餐时长为正。首版只支持此午餐日程，不假装已经支持任意活动脚本。
+ID 唯一；起点/后续地点存在；固定策略的午餐设施必须存在；departure_minute 为非负整数；速度、就餐时长为正。也可在严格的七列表头后追加第八列 `lunch_policy`，其值为 `fixed`、`nearest`、`fastest`，动态策略的 `lunch_facility` 可以为空。CLI 的 `--policy` 会覆盖所有个人策略。详见 [动态午餐指南](14_DYNAMIC_LUNCH.md)。
 
 ## C 独立测试文件
 
@@ -37,7 +37,7 @@ ID 唯一；起点/后续地点、午餐设施必须存在；departure_minute �
 
 ## 运行输出（C 的记录器）
 
-四份文件必须全部输出，含固定表头；按 `now=0…duration` 每分钟记录全部学生和设施，记录器不丢弃 Finished 学生。
+五份文件必须全部输出，含固定表头；按 `now=0…duration` 每分钟记录全部学生和设施，记录器不丢弃 Finished 学生。
 
 ### `events.csv`
 
@@ -71,6 +71,14 @@ facility_id,window_count,observation_minutes,arrived,started,completed,max_queue
 
 duration=120 时 observation_minutes 为 120，即有 121 次快照、120 分钟观察区间；利用率不能除以 121。每个设施一行，按设施 ID 排序。
 
+### `decisions.csv`
+
+```csv
+at,student_id,policy,facility_id,destination,observed_at,queue_length,distance_m,route_path,travel_minutes,estimated_wait_minutes,service_minutes,estimated_total_minutes,selected,reason
+```
+
+每个候选一行；`selected=1` 表示学生实际选择。`observed_at=-1` 是初始空快照；`route_path` 用 `|` 分隔地点。不可达或端点不合法候选保留原因、路线和估计字段留空；没有已知估计时相应字段留空。预计等待只考虑快照已有请求，不等于实际等待。完整逐人预计与实际比较由动态实验脚本另行生成。
+
 ## 截止与重复运行
 
-若 t=120 时未完成全部请求，仍按真实状态输出，并保留计数差异。用户应换输出目录运行第二次；首版拒绝覆盖已有的四个结果文件。对照实验另存 `outputs/one_window/`、`outputs/two_windows/`，不要把多次结果接在同一文件末尾。
+若 t=120 时未完成全部请求，仍按真实状态输出，并保留计数差异。用户应换输出目录运行第二次；程序拒绝覆盖已有的五个结果文件。对照实验另存 `outputs/one_window/`、`outputs/two_windows/`，不要把多次结果接在同一文件末尾。

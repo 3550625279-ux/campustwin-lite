@@ -51,7 +51,7 @@ flowchart TB
 | `environment.hpp` | `src/environment/environment.cpp` | `CampusEnvironment`：场景与路径 |
 | `students.hpp` | `src/students/students.cpp` | `StudentEngine` 和学生 CSV 读取 |
 | `resources.hpp` | `src/resources/resources.cpp` | `FacilityEngine`：队列、窗口、统计 |
-| `reporting.hpp` | `src/reporting/reporting.cpp` | `CsvRunWriter`：四份结果文件 |
+| `reporting.hpp` | `src/reporting/reporting.cpp` | `CsvRunWriter`：五份结果文件（含决策记录） |
 | `simulation.hpp` | `src/simulation/simulation.cpp` | `SimulationRunner`：固定时钟与调用顺序 |
 | `not_implemented.hpp` | 仅占位辅助 | 抛出带责任角色的未实现提示，避免空函数假装成功 |
 
@@ -100,7 +100,7 @@ B 产生“某学生在 t 分钟到达某食堂”，C 需要读懂它。若 B �
 | --- | --- | --- |
 | 初始输入 | 场景/学生 CSV | 启动时读取 |
 | 运行反馈 | 内存中的事件与函数调用 | 每分钟 B/C 相互影响时 |
-| 观察结果 | 四份输出 CSV | 阶段末记录、运行后分析 |
+| 观察结果 | 五份输出 CSV | 阶段末记录、运行后分析 |
 
 不能简单做成“A 先导出文件，B 算完导出文件，C 最后读文件”这样的单向流水线，因为 C 的真实完成时间会决定 B 后续什么时候吃饭和离开。
 

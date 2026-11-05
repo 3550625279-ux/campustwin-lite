@@ -14,7 +14,7 @@ A 的独立测试通过不能单独证明集成正确，详见 [A 部分交付�
 python3 tests/validate_sample_data.py
 ```
 
-当前 CTest 另运行两项 B 验证：
+当前 CTest 另运行以下 B 验证：
 
 - `student_engine_behavior`：`student_engine_tests.cpp` 的 21 组行为用例，覆盖 CSV、引用、移动取整、事件顺序、重复事件、缺失反馈、重置、数值溢出、失败回滚，以及 20 人的全部学生轨迹。
 - `student_demo`：实际运行 `demo_b`，验证单学生等待 3 分钟后的完整闭环。
@@ -28,7 +28,7 @@ ctest --test-dir build -C Debug --output-on-failure
 
 B 测试中的路线提供者和 C 服务事件脚本是测试替身。20 人轨迹用例通过提供外部开始、完成事件来检查 B 的响应；它不验证真实 A 路线、真实 C 队列和统一调度是否已经接通。B 的运行说明见 `docs/11_B_STUDENT_MVP.md`。
 
-`check_mvp_outputs.py` 在业务实现完成并真实导出四份 CSV 后使用，检查规范 20 人、2 窗口、120 分钟这一固定场景，包括全部状态、事件顺序、移动区间、队列和统计。
+`check_mvp_outputs.py` 在真实导出原有四份基准 CSV 后使用，检查规范 20 人、2 窗口、120 分钟这一固定场景，包括全部状态、事件顺序、移动区间、队列和统计。
 
 ```bash
 python3 tests/check_mvp_outputs.py outputs/mvp
@@ -43,5 +43,6 @@ CTest 还运行以下测试：
 - `simulation_phases`：验证统一调度阶段顺序、最后 tick 和跨模块状态不一致时拒绝输出。
 - `integrated_mvp`：真实运行 A/B/C 与 C 独立演示，检查 20 人基准、单窗口、道路加倍、提前截止、重复运行、Unicode 路径和错误输入。
 - `lunch_experiments`：真实运行双食堂三组实验，核对路径和移动取整、两组食堂状态、窗口与速度控制变量、逐人时间、结果防覆盖、提前截止与重复运行。
+- `dynamic_lunch_decisions`：真实运行三种食堂策略，核对评分、快照时间、决策与事件、混合策略、不可达候选、截断和重复运行。`resource_engine_behavior` 另以手算 FIFO 用例验证冻结快照和预测。
 
 GitHub Actions 在 Linux 和 Windows 运行 CTest；每次提交的远端测试结论以对应 Actions 记录为准。

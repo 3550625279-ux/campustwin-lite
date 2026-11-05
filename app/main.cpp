@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <locale>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -18,6 +19,7 @@ int run(const std::vector<std::string>& args) {
     std::filesystem::path population_file = "data/students/mvp.csv";
     std::filesystem::path output = "outputs/mvp";
     SimulationSettings settings;
+    std::optional<LunchPolicy> policy;
     std::string route_from, route_to;
     std::set<std::string> seen;
     for (std::size_t i = 1; i < args.size(); ++i) {
@@ -25,12 +27,13 @@ int run(const std::vector<std::string>& args) {
         if (option == "--help") {
             std::cout << "CampusTwin Lite: run the lunch simulation.\n"
                       << "campustwin [--scenario DIR] [--students FILE] [--duration MINUTES] [--output DIR]\n"
+                      << "           [--policy fixed|nearest|fastest]\n"
                       << "campustwin [--scenario DIR] --route FROM TO\n"
                       << "Defaults: data/scenarios/mvp, data/students/mvp.csv, 120, outputs/mvp.\n"
                       << "Existing result files are never overwritten.\n";
             return 0;
         }
-        if (option != "--scenario" && option != "--students" && option != "--duration" && option != "--output" && option != "--route")
+        if (option != "--scenario" && option != "--students" && option != "--duration" && option != "--output" && option != "--route" && option != "--policy")
             throw ValidationError("unknown option: " + option);
         if (!seen.insert(option).second) throw ValidationError("duplicate option: " + option);
         if (++i == args.size() || args[i].empty()) throw ValidationError("missing value for " + option);
@@ -42,6 +45,12 @@ int run(const std::vector<std::string>& args) {
         else if (option == "--scenario") scenario = std::filesystem::u8path(args[i]);
         else if (option == "--students") population_file = std::filesystem::u8path(args[i]);
         else if (option == "--output") output = std::filesystem::u8path(args[i]);
+        else if (option == "--policy") {
+            if (args[i] == "fixed") policy = LunchPolicy::Fixed;
+            else if (args[i] == "nearest") policy = LunchPolicy::Nearest;
+            else if (args[i] == "fastest") policy = LunchPolicy::Fastest;
+            else throw ValidationError("--policy must be fixed, nearest, or fastest");
+        }
         else {
             const auto& value = args[i];
             const auto parsed = std::from_chars(value.data(), value.data() + value.size(), settings.duration_minutes);
@@ -50,7 +59,7 @@ int run(const std::vector<std::string>& args) {
         }
     }
     CampusEnvironment environment;
-    if (seen.count("--route") && (seen.count("--students") || seen.count("--duration") || seen.count("--output")))
+    if (seen.count("--route") && (seen.count("--students") || seen.count("--duration") || seen.count("--output") || seen.count("--policy")))
         throw ValidationError("--route cannot be combined with simulation options");
     environment.load_directory(scenario);
     if (seen.count("--route")) {
@@ -66,7 +75,8 @@ int run(const std::vector<std::string>& args) {
         std::cout << '\n';
         return 0;
     }
-    const auto population = read_student_specs(population_file);
+    auto population = read_student_specs(population_file);
+    if (policy) for (auto& student : population) student.lunch_policy = *policy;
     StudentEngine students;
     FacilityEngine facilities;
     CsvRunWriter writer(output);
@@ -76,7 +86,7 @@ int run(const std::vector<std::string>& args) {
         throw std::runtime_error(std::string("run failed; any output may be incomplete: ") + error.what());
     }
     std::cout << "Simulation complete: " << population.size() << " students, "
-              << settings.duration_minutes << " minutes; four CSV files written to " << output.u8string() << '\n';
+              << settings.duration_minutes << " minutes; five CSV files written to " << output.u8string() << '\n';
     return 0;
 }
 }  // namespace

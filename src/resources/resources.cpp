@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <queue>
 #include <set>
 #include <string>
 #include <utility>
@@ -38,6 +40,52 @@ void check_time(SimTime now) {
         throw ValidationError("C: negative simulation time");
     }
 }
+
+struct FrozenFacility {
+    FacilityDecisionStatus status;
+    std::vector<SimTime> available_at;
+    mutable std::optional<std::int64_t> next_available_after_queue;
+};
+
+class FrozenAdvisor final : public IFacilityAdvisor {
+public:
+    explicit FrozenAdvisor(std::map<FacilityId, FrozenFacility> entries)
+        : entries_(std::move(entries)) {}
+
+    std::vector<FacilityDecisionStatus> statuses() const override {
+        std::vector<FacilityDecisionStatus> out;
+        out.reserve(entries_.size());
+        for (const auto& item : entries_) out.push_back(item.second.status);
+        return out;
+    }
+
+    std::int64_t estimate_wait(const FacilityId& id, SimTime arrival_at) const override {
+        const auto found = entries_.find(id);
+        if (found == entries_.end()) throw ValidationError("C: unknown forecast facility " + id);
+        const auto& facility = found->second;
+        if (arrival_at < 0 || arrival_at < facility.status.observed_at)
+            throw ValidationError("C: forecast arrival precedes snapshot");
+        if (!facility.next_available_after_queue) {
+            std::vector<std::int64_t> times(facility.available_at.begin(), facility.available_at.end());
+            std::priority_queue<std::int64_t, std::vector<std::int64_t>, std::greater<std::int64_t>>
+                available(std::greater<std::int64_t>{}, std::move(times));
+            if (available.empty()) throw ValidationError("C: forecast has no windows");
+            // Existing queued students are ahead of the hypothetical student.
+            // The immutable result is reused for every decision on this snapshot.
+            for (std::size_t i = 0; i < facility.status.queue_length; ++i) {
+                const auto start = available.top(); available.pop();
+                if (start > std::numeric_limits<std::int64_t>::max() - facility.status.service_minutes)
+                    throw ValidationError("C: forecast time overflow");
+                available.push(start + facility.status.service_minutes);
+            }
+            facility.next_available_after_queue = available.top();
+        }
+        return std::max<std::int64_t>(0, *facility.next_available_after_queue - arrival_at);
+    }
+
+private:
+    std::map<FacilityId, FrozenFacility> entries_;
+};
 
 }  // namespace
 
@@ -80,6 +128,27 @@ void FacilityEngine::reset(const std::vector<FacilityConfig>& configs) {
     current_tick_ = -1;
     phase_ = 0;
     initialized_ = true;
+}
+
+std::unique_ptr<IFacilityAdvisor> FacilityEngine::decision_snapshot() const {
+    require_initialized();
+    if (phase_ != 0) throw ValidationError("C: decision snapshot requires a completed tick");
+    std::map<FacilityId, FrozenFacility> frozen;
+    for (const auto& [id, facility] : facilities_) {
+        FrozenFacility item;
+        item.status = {id, facility.config.location_id, current_tick_, facility.queue.size(),
+                       0, facility.config.window_count, facility.config.service_minutes};
+        for (const auto& slot : facility.windows) {
+            if (slot) {
+                ++item.status.in_service;
+                item.available_at.push_back(slot->end_at);
+            } else {
+                item.available_at.push_back(std::max<SimTime>(0, current_tick_));
+            }
+        }
+        frozen.emplace(id, std::move(item));
+    }
+    return std::make_unique<FrozenAdvisor>(std::move(frozen));
 }
 
 std::vector<ServiceCompleted> FacilityEngine::complete_due(SimTime now) {
