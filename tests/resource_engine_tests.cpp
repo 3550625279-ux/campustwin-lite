@@ -108,11 +108,53 @@ void time_overflow() {
     rejects([&]{ engine.start_ready(1); }, "service end overflow");
     rejects([&]{ engine.start_ready(1); }, "overflow must not consume queued request");
 }
+
+void frozen_wait_forecast() {
+    FacilityEngine engine;
+    engine.reset({{"F", "L", 2, 2}});
+    const auto initial = engine.decision_snapshot();
+    require(initial->statuses().at(0).observed_at == -1 && initial->estimate_wait("F", 0) == 0,
+            "initial empty forecast");
+    engine.complete_due(0);
+    rejects([&] { engine.decision_snapshot(); }, "snapshot during an incomplete tick");
+    engine.enqueue({arrival("S001"), arrival("S002"), arrival("S003"),
+                    arrival("S004"), arrival("S005"), arrival("S006")}, 0);
+    engine.start_ready(0);
+    const auto frozen = engine.decision_snapshot();
+    const auto status = frozen->statuses().at(0);
+    require(status.observed_at == 0 && status.queue_length == 4 && status.in_service == 2,
+            "frozen queue/window status");
+    require(frozen->estimate_wait("F", 2) == 4 && frozen->estimate_wait("F", 6) == 0,
+            "forecast must account for existing jobs and future arrival");
+    rejects([&] { frozen->estimate_wait("missing", 2); }, "unknown forecast facility");
+    engine.complete_due(1); engine.enqueue({}, 1); engine.start_ready(1);
+    require(frozen->statuses().at(0).observed_at == 0 && frozen->estimate_wait("F", 2) == 4,
+            "snapshot changed after its creation");
+    engine.complete_due(2); engine.enqueue({arrival("S007", 2)}, 2); engine.start_ready(2);
+    SimTime actual_wait = -1;
+    for (SimTime t = 3; t <= 6; ++t) {
+        engine.complete_due(t); engine.enqueue({}, t);
+        for (const auto& start : engine.start_ready(t))
+            if (start.student_id == "S007") actual_wait = start.wait_minutes;
+    }
+    require(actual_wait == 4, "forecast should match an otherwise unchanged FIFO run");
+
+    // Forecasts may extend beyond the 32-bit simulation horizon; keep them
+    // representable rather than rejecting an otherwise valid short run.
+    engine.reset({{"F", "L", 1, std::numeric_limits<SimTime>::max()}});
+    engine.complete_due(0);
+    engine.enqueue({arrival("S001"), arrival("S002"), arrival("S003")}, 0);
+    engine.start_ready(0);
+    const auto long_forecast = engine.decision_snapshot();
+    require(long_forecast->estimate_wait("F", 1) ==
+                3LL * std::numeric_limits<SimTime>::max() - 1,
+            "long forecasts should not overflow SimTime");
+}
 }  // namespace
 
 int main() {
     try {
-        fifo_and_statistics(); validation_and_rollback(); simultaneous_arrivals(); time_overflow();
+        fifo_and_statistics(); validation_and_rollback(); simultaneous_arrivals(); time_overflow(); frozen_wait_forecast();
         std::cout << "PASS: C queue, event order, validation and statistics\n";
         return 0;
     } catch (const std::exception& error) {
