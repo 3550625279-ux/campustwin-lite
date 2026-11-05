@@ -24,6 +24,14 @@ const char* state_name(StudentState state) {
     }
     throw ValidationError("C: unknown student state");
 }
+const char* policy_name(LunchPolicy policy) {
+    switch (policy) {
+    case LunchPolicy::Fixed: return "fixed";
+    case LunchPolicy::Nearest: return "nearest";
+    case LunchPolicy::Fastest: return "fastest";
+    }
+    throw ValidationError("C: unknown lunch policy");
+}
 void ensure(const std::ofstream& o, const std::string& name) {
     if (!o) throw std::runtime_error("C: failed writing " + name);
 }
@@ -32,7 +40,7 @@ void CsvRunWriter::begin(const SimulationSettings& settings, const CampusScenari
     if (begun_) throw ValidationError("C: writer already started");
     if (settings.duration_minutes < 1) throw ValidationError("C: invalid duration");
     std::filesystem::create_directories(output_directory_);
-    for (const auto* name : {"events.csv", "student_snapshots.csv", "facility_snapshots.csv", "summary.csv"}) {
+    for (const auto* name : {"events.csv", "student_snapshots.csv", "facility_snapshots.csv", "summary.csv", "decisions.csv"}) {
         if (std::filesystem::exists(output_directory_ / name))
             throw ValidationError(std::string("C: refusing to overwrite ") + name);
     }
@@ -40,13 +48,15 @@ void CsvRunWriter::begin(const SimulationSettings& settings, const CampusScenari
     students_.open(output_directory_ / "student_snapshots.csv", std::ios::binary);
     facilities_.open(output_directory_ / "facility_snapshots.csv", std::ios::binary);
     summary_.open(output_directory_ / "summary.csv", std::ios::binary);
+    decisions_.open(output_directory_ / "decisions.csv", std::ios::binary);
     ensure(events_, "events.csv"); ensure(students_, "student_snapshots.csv");
-    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv");
+    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv"); ensure(decisions_, "decisions.csv");
     events_ << "at,type,request_id,student_id,facility_id,window_id,wait_minutes\n";
     students_ << "at,student_id,state,location_id,from,to,depart_at,arrive_at,distance_m\n";
     facilities_ << "at,facility_id,queue_length,in_service,arrived,started,completed,max_queue_length,total_wait_minutes,busy_window_minutes\n";
     summary_ << "facility_id,window_count,observation_minutes,arrived,started,completed,max_queue_length,total_wait_minutes,mean_wait_minutes,busy_window_minutes,utilization\n";
-    duration_ = settings.duration_minutes; next_tick_ = 0; begun_ = true;
+    decisions_ << "at,student_id,policy,facility_id,destination,observed_at,queue_length,distance_m,route_path,travel_minutes,estimated_wait_minutes,service_minutes,estimated_total_minutes,selected,reason\n";
+    duration_ = settings.duration_minutes; next_tick_ = 0; last_decision_tick_ = -1; begun_ = true;
 }
 void CsvRunWriter::write_tick(SimTime now,
     const std::vector<ServiceCompleted>& completed,
@@ -125,6 +135,44 @@ void CsvRunWriter::write_tick(SimTime now,
     ensure(facilities_, "facility_snapshots.csv");
     ++next_tick_;
 }
+void CsvRunWriter::write_decisions(SimTime now, const std::vector<LunchDecision>& decisions) {
+    if (!begun_ || now != next_tick_ - 1 || now <= last_decision_tick_)
+        throw ValidationError("C: decision rows must follow their tick exactly once");
+    std::ostringstream rows;
+    rows.imbue(std::locale::classic());
+    rows << std::fixed << std::setprecision(6);
+    auto ordered = decisions;
+    std::sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) {
+        return std::tie(a.student_id, a.facility_id) < std::tie(b.student_id, b.facility_id);
+    });
+    for (const auto& d : ordered) {
+        if (d.at != now) throw ValidationError("C: decision timestamp mismatch");
+        csv_check(d.student_id); csv_check(d.facility_id); csv_check(d.destination); csv_check(d.reason);
+        rows << now << ',' << d.student_id << ',' << policy_name(d.policy) << ',' << d.facility_id
+             << ',' << d.destination << ',' << d.observed_at << ',';
+        if (d.queue_length) rows << *d.queue_length;
+        rows << ',';
+        if (d.distance_m) rows << *d.distance_m;
+        rows << ',';
+        for (std::size_t i = 0; i < d.path.size(); ++i) {
+            csv_check(d.path[i]);
+            if (i) rows << '|';
+            rows << d.path[i];
+        }
+        rows << ',';
+        if (d.travel_minutes) rows << *d.travel_minutes;
+        rows << ',';
+        if (d.estimated_wait_minutes) rows << *d.estimated_wait_minutes;
+        rows << ',';
+        if (d.service_minutes) rows << *d.service_minutes;
+        rows << ',';
+        if (d.estimated_total_minutes) rows << *d.estimated_total_minutes;
+        rows << ',' << (d.selected ? 1 : 0) << ',' << d.reason << '\n';
+    }
+    decisions_ << rows.str();
+    ensure(decisions_, "decisions.csv");
+    last_decision_tick_ = now;
+}
 void CsvRunWriter::finish(const std::vector<FacilitySummary>& facilities) {
     if (!begun_ || next_tick_ != static_cast<std::int64_t>(duration_) + 1)
         throw ValidationError("C: writer must receive every tick including final tick");
@@ -144,12 +192,12 @@ void CsvRunWriter::finish(const std::vector<FacilitySummary>& facilities) {
                  << ',' << f.busy_window_minutes << ',' << util << '\n';
     }
     summary_ << summary_rows.str();
-    events_.flush(); students_.flush(); facilities_.flush(); summary_.flush();
+    events_.flush(); students_.flush(); facilities_.flush(); summary_.flush(); decisions_.flush();
     ensure(events_, "events.csv"); ensure(students_, "student_snapshots.csv");
-    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv");
-    events_.close(); students_.close(); facilities_.close(); summary_.close();
+    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv"); ensure(decisions_, "decisions.csv");
+    events_.close(); students_.close(); facilities_.close(); summary_.close(); decisions_.close();
     ensure(events_, "events.csv"); ensure(students_, "student_snapshots.csv");
-    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv");
+    ensure(facilities_, "facility_snapshots.csv"); ensure(summary_, "summary.csv"); ensure(decisions_, "decisions.csv");
     begun_ = false;
 }
 } // namespace campustwin
