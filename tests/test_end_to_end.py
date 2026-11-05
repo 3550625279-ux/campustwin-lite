@@ -41,6 +41,15 @@ def main():
         shutil.copyfile(students, unicode_students)
         result = run([demo_b, "--students", unicode_students, "--all", "--wait", 3, "--duration", 20])
         assert "SUMMARY students=20 arrivals=20 finished=20" in result.stdout
+        malformed_unicode_students = temporary / "学生错误.csv"
+        bad_data = rows(students)
+        bad_data[0]["walk_m_per_min"] = "0"
+        write_rows(malformed_unicode_students, bad_data)
+        result = run([demo_b, "--students", malformed_unicode_students], expected_success=False)
+        assert "学生错误.csv" in result.stderr and "walk_m_per_min" in result.stderr, result.stderr
+        missing_unicode_students = temporary / "学生缺失.csv"
+        result = run([demo_b, "--students", missing_unicode_students], expected_success=False)
+        assert "学生缺失.csv" in result.stderr and "cannot open" in result.stderr, result.stderr
 
         def simulation(destination, *, scenario_path=scenario, students_path=students, duration=120,
                        expected_success=True):
