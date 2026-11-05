@@ -79,8 +79,8 @@ def prepare_case(destination, scenario, students, case, target, window_count, sp
             if not math.isfinite(speed) or speed <= 0:
                 raise ValueError("speed multiplier produces an invalid speed")
             row["walk_m_per_min"] = format(speed, ".15g")
-        fields = ["id", "initial_location", "lunch_facility", "after_meal_location",
-                  "departure_minute", "walk_m_per_min", "meal_minutes"]
+        with path.open(encoding="utf-8", newline="") as stream:
+            fields = csv.DictReader(stream).fieldnames
         write_csv(path, population, fields)
     return scenario_copy, inputs / "students.csv"
 
@@ -237,7 +237,7 @@ i{{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6p
 {table(['起点','出发 / 分','速度 / 米每分','食堂','人数','已开始吃饭','出发到开始吃饭 / 分'], group_comparison(baseline))}
 <h2>队列随时间变化</h2><p>每分钟的队列快照，记录当分钟可用窗口完成分配之后的人数。</p><div class="grid">{charts}</div>
 <h2>核对与复现</h2><p><a href="comparison.csv">食堂对比 CSV</a> · <a href="student_journeys.csv">逐人行程 CSV</a> · <a href="routes.csv">路线 CSV</a></p>
-<p>每组的 <code>runs/组名/input/</code> 保存实际输入，<code>runs/组名/output/</code> 保存程序的四份原始输出。地点与人口均为合成数据；食堂由输入预先指定，并非动态选择。速度对照只是速度变化，不模拟自行车和道路通行规则。</p>
+<p>每组的 <code>runs/组名/input/</code> 保存实际输入，<code>runs/组名/output/</code> 保存程序的五份原始输出。地点与人口均为合成数据；食堂由输入预先指定，并非动态选择。速度对照只是速度变化，不模拟自行车和道路通行规则。</p>
 </body></html>"""
     (output / "report.html").write_text(report, encoding="utf-8")
 
@@ -274,7 +274,7 @@ def run(args):
                                                     args.speed_multiplier)
         raw_output = destination / "output"
         call([executable, "--scenario", case_scenario, "--students", case_students,
-              "--duration", args.duration, "--output", raw_output])
+              "--duration", args.duration, "--policy", "fixed", "--output", raw_output])
         case_journeys = derive_journeys(case, read_csv(case_students), raw_output, routes, args.duration)
         journeys.extend(case_journeys)
         summaries.extend(summarize(case, raw_output, case_journeys))
