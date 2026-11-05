@@ -47,6 +47,8 @@ const char* state_name(StudentState state) {
     case StudentState::InService: return "InService";
     case StudentState::Eating: return "Eating";
     case StudentState::Finished: return "Finished";
+    case StudentState::WaitingSeat: return "WaitingSeat";
+    case StudentState::InActivity: return "InActivity";
     }
     return "Unknown";
 }
