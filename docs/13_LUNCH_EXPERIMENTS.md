@@ -26,7 +26,7 @@
 | `more_windows` | 只把近食堂改为 3 个窗口 | 学生、地点、道路、远食堂和服务时长 |
 | `faster_walk` | 只把每个学生的移动速度乘以 2 | 所有学生的出发地点、时间、食堂、道路和窗口配置 |
 
-分配食堂、出发条件和人数在输入中事先确定。出发时间和速度均相同的两组学生可作为示例对照；他们是不同学生，不是让同一个人同时到两座食堂。多组之间的结论只适用于这些明确的设置。
+本工具显式使用 `fixed` 策略，分配食堂、出发条件和人数在输入中事先确定。出发时间和速度均相同的两组学生可作为示例对照；他们是不同学生，不是让同一个人同时到两座食堂。多组之间的结论只适用于这些明确的设置。
 
 ## 运行
 
@@ -75,7 +75,7 @@ python3 tools/run_lunch_experiments.py --executable build/campustwin --output ou
 ./build/campustwin --scenario data/scenarios/two_canteens --route L_T1 L_FAR
 ```
 
-输出为 CSV：`from,to,distance_m,path`，路径中的 `|` 分隔地点。查询使用 A 的实际最短路径实现，不会运行午餐仿真；未知地点或不可达会报错。`--route` 可以与 `--scenario` 一起使用，但不能与 `--students`、`--duration` 或 `--output` 混用。
+输出为 CSV：`from,to,distance_m,path`，路径中的 `|` 分隔地点。查询使用 A 的实际最短路径实现，不会运行午餐仿真；未知地点或不可达会报错。`--route` 可以与 `--scenario` 一起使用，但不能与 `--students`、`--duration`、`--policy` 或 `--output` 混用。
 
 ## 结果在哪里
 
@@ -86,7 +86,7 @@ python3 tools/run_lunch_experiments.py --executable build/campustwin --output ou
 | `student_journeys.csv` | 每个学生的起点、指定食堂、路径、距离、到达、等待和开始吃饭时间 |
 | `routes.csv` | 每个起点到对应食堂的实际最短路径和距离 |
 | `runs/<组名>/input/` | 该组真实使用的场景和学生输入副本 |
-| `runs/<组名>/output/` | 程序原始的 `events.csv`、两个逐分钟快照和 `summary.csv` |
+| `runs/<组名>/output/` | 程序原始的 `events.csv`、两个逐分钟快照、`summary.csv` 和 `decisions.csv` |
 
 `comparison.csv` 中 `assigned` 是配置中指定去该食堂的人数；`not_arrived = assigned - arrived`，包括尚未出发和正在路上的人；`waiting = arrived - started`；`in_service = started - completed`；`not_completed = assigned - completed`，包含未到达、等待和服务中的人。开始吃饭指窗口服务完成时，并不是吃完饭或返回宿舍。
 
@@ -111,7 +111,7 @@ python3 tools/run_lunch_experiments.py --executable build/campustwin --output ou
 
 ## 当前模型的边界
 
-- 学生只执行一次固定午餐日程；没有动态根据距离或实时队列选食堂。
+- 本工具运行固定目的地的午餐日程。统一程序的动态选食堂另见 [动态午餐指南](14_DYNAMIC_LUNCH.md)；完整一天日程仍未实现。
 - 所有道路双向，路线按总距离最短选择，移动时间为 `ceil(距离 / 速度)`，不模拟逐段行进、路况或交通拥堵。
 - 速度实验并不模拟自行车：没有车辆类型、可通行道路、停放或校车规则。
 - 每个食堂有独立 FIFO 队列，共享该食堂的窗口；同一分钟到达的学生按 ID 排序。窗口服务后立即开始就餐，就餐不占窗口。
