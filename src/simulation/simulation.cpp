@@ -14,9 +14,9 @@ void check_snapshots(SimTime now, const CampusScenario& scenario,
     std::map<FacilityId, LocationId> locations;
     for (const auto& facility : scenario.facilities)
         locations.emplace(facility.id, facility.location_id);
-    std::map<StudentId, FacilityId> destinations;
+    std::map<StudentId, StudentSpec> specs;
     for (const auto& student : population)
-        destinations.emplace(student.id, student.lunch_facility);
+        specs.emplace(student.id, student);
 
     if (students.size() != population.size() || facilities.size() != locations.size())
         throw ValidationError("simulation: missing or extra snapshot");
@@ -24,10 +24,18 @@ void check_snapshots(SimTime now, const CampusScenario& scenario,
     std::map<FacilityId, std::size_t> queued, in_service;
     std::set<StudentId> seen_students;
     for (const auto& student : students) {
-        const auto destination = destinations.find(student.student_id);
-        if (student.at != now || destination == destinations.end() ||
+        const auto spec = specs.find(student.student_id);
+        if (student.at != now || spec == specs.end() ||
             !seen_students.insert(student.student_id).second)
             throw ValidationError("simulation: invalid or duplicate student snapshot");
+        const auto destination = student.lunch_facility ? *student.lunch_facility : spec->second.lunch_facility;
+        if (spec->second.lunch_policy == LunchPolicy::Fixed && destination != spec->second.lunch_facility)
+            throw ValidationError("simulation: fixed student changed facility");
+        if (student.lunch_facility && locations.count(*student.lunch_facility) == 0)
+            throw ValidationError("simulation: student selected an unknown facility");
+        if (spec->second.lunch_policy != LunchPolicy::Fixed &&
+            student.state != StudentState::AtLocation && !student.lunch_facility)
+            throw ValidationError("simulation: missing dynamic facility choice");
         if (student.state == StudentState::Moving) {
             if (student.location_id || !student.move)
                 throw ValidationError("simulation: invalid moving student snapshot");
@@ -35,11 +43,11 @@ void check_snapshots(SimTime now, const CampusScenario& scenario,
             throw ValidationError("simulation: invalid stationary student snapshot");
         }
         if (student.state == StudentState::Queued || student.state == StudentState::InService) {
-            const auto location = locations.find(destination->second);
+            const auto location = locations.find(destination);
             if (location == locations.end() || *student.location_id != location->second)
                 throw ValidationError("simulation: student is at the wrong facility");
-            if (student.state == StudentState::Queued) ++queued[destination->second];
-            else ++in_service[destination->second];
+            if (student.state == StudentState::Queued) ++queued[destination];
+            else ++in_service[destination];
         }
     }
 
@@ -74,9 +82,12 @@ void SimulationRunner::run(const SimulationSettings& settings,
     writer.begin(settings, scenario);
 
     for (SimTime now = 0;; ++now) {
+        // Freeze the end of t-1 before completing anything at t. All students
+        // deciding in this tick use the same observation; t=0 uses reset state.
+        const auto advisor = facilities.decision_snapshot();
         const auto completed = facilities.complete_due(now);
         for (const auto& event : completed) students.on_service_completed(event);
-        const auto arrivals = students.tick(now, environment);
+        const auto arrivals = students.tick(now, environment, advisor.get());
         facilities.enqueue(arrivals, now);
         const auto started = facilities.start_ready(now);
         for (const auto& event : started) students.on_service_started(event);
@@ -84,6 +95,7 @@ void SimulationRunner::run(const SimulationSettings& settings,
         const auto facility_snapshots = facilities.snapshots(now);
         check_snapshots(now, scenario, population, student_snapshots, facility_snapshots);
         writer.write_tick(now, completed, arrivals, started, student_snapshots, facility_snapshots);
+        writer.write_decisions(now, students.decisions(now));
         if (now == settings.duration_minutes) break;
     }
     writer.finish(facilities.summaries(settings.duration_minutes));
