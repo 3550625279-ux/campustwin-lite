@@ -150,6 +150,8 @@ def run(args):
         raise ValueError('duration must be a positive 32-bit integer')
     if output.exists():
         raise ValueError('output directory already exists: ' + str(output))
+    if (scenario / 'seats.csv').exists() and read_csv(scenario / 'seats.csv'):
+        raise ValueError('seat-constrained scenarios require run_schedule_experiments.py')
     if output == scenario or scenario in output.parents:
         raise ValueError('output must not be inside the input scenario')
     population = read_csv(students)
