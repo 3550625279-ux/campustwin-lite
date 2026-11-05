@@ -42,5 +42,6 @@ CTest 还运行以下测试：
 - `reporting_behavior`：验证错误快照后重试不重复写事件、最终 tick、汇总格式和防覆盖。
 - `simulation_phases`：验证统一调度阶段顺序、最后 tick 和跨模块状态不一致时拒绝输出。
 - `integrated_mvp`：真实运行 A/B/C 与 C 独立演示，检查 20 人基准、单窗口、道路加倍、提前截止、重复运行、Unicode 路径和错误输入。
+- `lunch_experiments`：真实运行双食堂三组实验，核对路径和移动取整、两组食堂状态、窗口与速度控制变量、逐人时间、结果防覆盖、提前截止与重复运行。
 
 GitHub Actions 在 Linux 和 Windows 运行 CTest；每次提交的远端测试结论以对应 Actions 记录为准。

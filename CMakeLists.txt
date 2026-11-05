@@ -82,4 +82,7 @@ if(BUILD_TESTING)
     add_test(NAME integrated_mvp COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_end_to_end.py
         $<TARGET_FILE:campustwin> $<TARGET_FILE:demo_c> $<TARGET_FILE:demo_b> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME lunch_experiments COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lunch_experiments.py
+        $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
