@@ -1,0 +1,4 @@
+id,location_id,window_count,service_minutes
+F_NEAR,L_NEAR,3,2
+F_FAR,L_FAR,3,2
+F_WEST,L_WEST,3,2

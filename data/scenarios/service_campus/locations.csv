@@ -1,0 +1,13 @@
+id,name,kind,capacity
+L_T1,Teaching building 1,Teaching,200
+L_T2,Teaching building 2,Teaching,200
+L_T3,Teaching building 3,Teaching,200
+L_T4,Teaching building 4,Teaching,200
+L_LIBRARY,Library,Library,150
+L_DORM_N,North dormitory,Dormitory,250
+L_DORM_S,South dormitory,Dormitory,250
+L_NEAR,Central canteen,Canteen,150
+L_FAR,East canteen,Canteen,180
+L_LAB,Engineering building,Teaching,220
+L_DORM_W,West dormitory,Dormitory,200
+L_WEST,West canteen,Canteen,180

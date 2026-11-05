@@ -2,11 +2,31 @@
 
 基于 C++17 的校园午餐出行与服务仿真项目。学生从不同地点出发，可以选择固定、最近或预计最快的食堂；程序模拟出行、排队、窗口服务、就餐和返回，并记录路线、选择依据与实际结果。
 
-**当前提供三个可运行场景：**原始 20 人单食堂 MVP、40 人双食堂窗口/速度对照，以及 60 人的动态选食堂校园场景。实验可生成 CSV 和离线 HTML 图表报告。所有场景都是合成数据。
+**当前提供四个可运行场景：**原始 20 人单食堂 MVP、40 人双食堂窗口/速度对照、60 人动态选食堂，以及 60 人三食堂餐品与窗口服务场景。实验可生成 CSV 和离线 HTML 图表报告。所有场景都是合成数据。
 
 程序由校园环境、学生行为和食堂资源三个模块组成，由统一调度器连接。动态决策使用出发前的队列和窗口快照；预测不包含未来到达者。暂不支持自行车、中途换食堂或完整一天的日程。
 
 A 支持本地账号、场景编辑、CSV 保存与加载以及最短路径查询，详见 [A 部分交付说明](docs/A_DELIVERY.md)。B 支持学生数据读取、移动、服务事件响应和状态快照，详见 [B 模块实现与使用](docs/11_B_STUDENT_MVP.md)。
+
+## 第二阶段：窗口分工对照
+
+学生可以有餐品需求；每个窗口可以提供不同餐品并使用不同服务时间。下列实验在相同学生、路线和窗口数量下，对比专用窗口与通用窗口：
+
+```bash
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+python3 tools/run_service_experiments.py --executable build/campustwin --output outputs/service_demo
+```
+
+Windows PowerShell（Ninja/MinGW）：
+
+```powershell
+py -3 tools/run_service_experiments.py --executable .\build\campustwin.exe --output .\outputs\service_demo
+Start-Process .\outputs\service_demo\report.html
+```
+
+输出目录必须不存在；Visual Studio 生成器的可执行文件通常位于 `build/Debug/`。完整配置、匹配规则、结果和模型边界见 [餐品与窗口服务指南](docs/15_COMPLEX_SERVICES.md)。
 
 ## 快速运行动态选食堂实验
 

@@ -163,6 +163,8 @@ def run(args):
         input_scenario.mkdir(parents=True)
         for name in ('locations.csv', 'roads.csv', 'facilities.csv'):
             shutil.copyfile(scenario / name, input_scenario / name)
+        if (scenario / 'window_services.csv').exists():
+            shutil.copyfile(scenario / 'window_services.csv', input_scenario / 'window_services.csv')
         input_students = base / 'input' / 'students.csv'
         shutil.copyfile(students, input_students)
         raw = base / 'output'

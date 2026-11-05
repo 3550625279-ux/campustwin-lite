@@ -42,12 +42,43 @@ struct Road {
     double distance_m{0.0};  // undirected edge, finite and > 0
 };
 
+// A row describes one food served by one window. "*" means every food;
+// an explicit food row takes precedence over the wildcard for that window.
+struct WindowServiceConfig {
+    std::size_t window_id{0};
+    std::string meal_type;
+    SimTime service_minutes{0};
+};
+
 struct FacilityConfig {
     FacilityId id;
     LocationId location_id;
     std::size_t window_count{0};
     SimTime service_minutes{0};
+    // Empty means legacy homogeneous windows, each serving every meal.
+    std::vector<WindowServiceConfig> window_services{};
 };
+
+inline std::optional<SimTime> window_service_time(const FacilityConfig& facility,
+                                                  std::size_t window,
+                                                  const std::string& meal) {
+    if (window >= facility.window_count) return std::nullopt;
+    if (facility.window_services.empty()) return facility.service_minutes;
+    std::optional<SimTime> wildcard;
+    for (const auto& service : facility.window_services) {
+        if (service.window_id != window) continue;
+        if (service.meal_type == meal) return service.service_minutes;
+        if (service.meal_type == "*") wildcard = service.service_minutes;
+    }
+    return wildcard;
+}
+
+inline bool facility_serves(const FacilityConfig& facility, const std::string& meal) {
+    if (facility.window_services.empty()) return facility.window_count > 0;
+    for (const auto& service : facility.window_services)
+        if (service.meal_type == "*" || service.meal_type == meal) return true;
+    return false;
+}
 
 struct CampusScenario {
     std::vector<Location> locations;
@@ -70,6 +101,7 @@ struct StudentSpec {
     double walk_m_per_min{60.0};
     SimTime meal_minutes{5};
     LunchPolicy lunch_policy{LunchPolicy::Fixed};
+    std::string meal_type{"standard"};
 };
 
 struct SimulationSettings {
@@ -81,6 +113,7 @@ struct StudentArrival {
     StudentId student_id;
     FacilityId facility_id;
     SimTime at{0};
+    std::string meal_type{"standard"};
 };
 
 struct ServiceStarted {
@@ -90,6 +123,9 @@ struct ServiceStarted {
     std::size_t window_id{0};  // 0-based within a facility
     SimTime at{0};
     SimTime wait_minutes{0};
+    // C reports the actual assigned window's end time. Empty supports old test doubles.
+    std::optional<SimTime> expected_end_at{};
+    std::string meal_type{};
 };
 
 struct ServiceCompleted {
@@ -125,6 +161,11 @@ struct FacilityDecisionStatus {
     std::size_t queue_length{0};
     std::size_t in_service{0};
     std::size_t window_count{0};
+    SimTime service_minutes{0};
+};
+
+struct ServiceEstimate {
+    std::int64_t wait_minutes{0};
     SimTime service_minutes{0};
 };
 
@@ -194,6 +235,13 @@ public:
     virtual std::vector<FacilityDecisionStatus> statuses() const = 0;
     // FCFS estimate using the frozen queue and window release times only.
     virtual std::int64_t estimate_wait(const FacilityId& facility, SimTime arrival_at) const = 0;
+    virtual std::optional<ServiceEstimate> estimate_service(const FacilityId& facility,
+            SimTime arrival_at, const std::string& meal_type) const {
+        (void)meal_type;
+        for (const auto& status : statuses()) if (status.facility_id == facility)
+            return ServiceEstimate{estimate_wait(facility, arrival_at), status.service_minutes};
+        throw ValidationError("unknown forecast facility " + facility);
+    }
 };
 
 class IStudentEngine {

@@ -1,0 +1,10 @@
+facility_id,window_id,meal_type,service_minutes
+F_NEAR,0,rice,2
+F_NEAR,1,noodle,3
+F_NEAR,2,stirfry,5
+F_FAR,0,rice,2
+F_FAR,1,noodle,3
+F_FAR,2,stirfry,5
+F_WEST,0,rice,2
+F_WEST,1,noodle,3
+F_WEST,2,stirfry,5

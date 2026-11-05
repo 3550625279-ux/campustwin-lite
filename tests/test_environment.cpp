@@ -271,6 +271,21 @@ void test_files(const fs::path& root, const fs::path& scratch) {
     env.load_directory(fixture);
     CHECK(env.scenario().locations.size() == 2);
     CHECK(env.find_route("A", "B").distance_m == 12.5);
+
+    // Optional heterogeneous window configuration survives save/load, and a
+    // later homogeneous save cannot leave stale offerings in that directory.
+    env.load_directory(root / "data/scenarios/service_campus");
+    env.save_directory(scratch / "heterogeneous");
+    CampusEnvironment service_copy;
+    service_copy.load_directory(scratch / "heterogeneous");
+    CHECK(service_copy.scenario().facilities.size() == 3);
+    CHECK(service_copy.scenario().facilities.front().window_services.size() == 3);
+    CHECK(service_copy.scenario().facilities.front().window_services.at(1).meal_type == "noodle");
+    CHECK(service_copy.find_route("L_T1", "L_WEST").reachable);
+    env.load_directory(root / "data/scenarios/mvp");
+    env.save_directory(scratch / "heterogeneous");
+    service_copy.load_directory(scratch / "heterogeneous");
+    CHECK(service_copy.scenario().facilities.front().window_services.empty());
 }
 }  // namespace
 
