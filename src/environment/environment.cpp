@@ -63,7 +63,7 @@ void id(const std::string& text, const std::string& context) {
                 (c >= '0' && c <= '9') || c == '_' || c == '-', context,
                 "ID must contain only ASCII letters, digits, underscore or hyphen");
 }
-std::uint64_t integer(const std::string& text, const std::string& context) {
+std::uint64_t integer(const std::string& text, const std::string& context, bool allow_zero = false) {
     require(!text.empty(), context, "expected positive decimal integer");
     std::uint64_t value = 0;
     for (unsigned char c : text) {
@@ -72,7 +72,7 @@ std::uint64_t integer(const std::string& text, const std::string& context) {
         require(value <= (max_integer - digit) / 10, context, "integer exceeds 2147483647");
         value = value * 10 + digit;
     }
-    require(value > 0, context, "integer must be positive");
+    require(allow_zero || value > 0, context, "integer must be positive");
     return value;
 }
 double distance(const std::string& text, const std::string& context) {
@@ -164,6 +164,7 @@ void validate(const CampusScenario& scenario, const Context* source = nullptr) {
     }
     std::set<FacilityId> facility_ids;
     std::set<LocationId> facility_locations;
+    std::size_t service_rows = 0;
     for (std::size_t i = 0; i < scenario.facilities.size(); ++i) {
         const auto& facility = scenario.facilities[i];
         const auto context = context_at(source ? &source->facilities : nullptr, i, "facility[" + facility.id + "]");
@@ -177,6 +178,21 @@ void validate(const CampusScenario& scenario, const Context* source = nullptr) {
         require(facility.window_count > 0 && facility.window_count <= max_facility_windows,
                 context, "window_count must be 1..100000");
         require(facility.service_minutes > 0, context, "service_minutes must be positive");
+        require(facility.window_services.size() <= max_roads - service_rows,
+                context, "more than 100000 window service rows");
+        service_rows += facility.window_services.size();
+        std::set<std::pair<std::size_t, std::string>> offerings;
+        std::set<std::size_t> covered_windows;
+        for (const auto& service : facility.window_services) {
+            require(service.window_id < facility.window_count, context, "window ID is outside window_count");
+            if (service.meal_type != "*") id(service.meal_type, context + " meal_type");
+            require(service.service_minutes > 0, context, "window service duration must be positive");
+            require(offerings.emplace(service.window_id, service.meal_type).second,
+                    context, "duplicate window and meal type");
+            covered_windows.insert(service.window_id);
+        }
+        require(facility.window_services.empty() || covered_windows.size() == facility.window_count,
+                context, "every configured window must offer at least one meal");
     }
 }
 bool same_edge(const Road& road, const LocationId& a, const LocationId& b) {
@@ -212,12 +228,26 @@ void CampusEnvironment::load_directory(const std::filesystem::path& directory) {
                                    static_cast<SimTime>(integer(f[3], context + " service_minutes"))});
         source.facilities.push_back(context);
     }
+    const auto wp = directory / "window_services.csv";
+    std::error_code ec;
+    const bool has_windows = std::filesystem::exists(wp, ec);
+    if (ec) throw std::runtime_error(wp.u8string() + ": cannot inspect window services: " + ec.message());
+    if (has_windows) {
+        for (const auto& row : read_csv(wp, "facility_id,window_id,meal_type,service_minutes", 4, max_roads)) {
+            const auto context = row_context(wp, row.line); const auto& f = row.fields;
+            const auto found = std::find_if(next.facilities.begin(), next.facilities.end(),
+                [&](const FacilityConfig& facility) { return facility.id == f[0]; });
+            require(found != next.facilities.end(), context, "unknown facility ID " + f[0]);
+            found->window_services.push_back({static_cast<std::size_t>(integer(f[1], context + " window_id", true)),
+                f[2], static_cast<SimTime>(integer(f[3], context + " service_minutes"))});
+        }
+    }
     validate(next, &source);
     replace_scenario(std::move(next));
 }
 void CampusEnvironment::save_directory(const std::filesystem::path& directory) const {
     validate(scenario_);
-    std::ostringstream locations, roads, facilities;
+    std::ostringstream locations, roads, facilities, window_services;
     locations.imbue(std::locale::classic()); roads.imbue(std::locale::classic()); facilities.imbue(std::locale::classic());
     locations << "id,name,kind,capacity\n";
     for (const auto& l : scenario_.locations) locations << l.id << ',' << l.name << ',' << kind_text(l.kind) << ',' << l.capacity << '\n';
@@ -225,13 +255,17 @@ void CampusEnvironment::save_directory(const std::filesystem::path& directory) c
     for (const auto& r : scenario_.roads) roads << r.from << ',' << r.to << ',' << r.distance_m << '\n';
     facilities << "id,location_id,window_count,service_minutes\n";
     for (const auto& f : scenario_.facilities) facilities << f.id << ',' << f.location_id << ',' << f.window_count << ',' << f.service_minutes << '\n';
-    require(locations.str().size() <= max_csv_bytes && roads.str().size() <= max_csv_bytes && facilities.str().size() <= max_csv_bytes, "save_directory", "serialized CSV exceeds 32 MiB limit");
+    window_services << "facility_id,window_id,meal_type,service_minutes\n";
+    for (const auto& f : scenario_.facilities) for (const auto& s : f.window_services)
+        window_services << f.id << ',' << s.window_id << ',' << s.meal_type << ',' << s.service_minutes << '\n';
+    require(locations.str().size() <= max_csv_bytes && roads.str().size() <= max_csv_bytes && facilities.str().size() <= max_csv_bytes && window_services.str().size() <= max_csv_bytes, "save_directory", "serialized CSV exceeds 32 MiB limit");
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
     if (ec) throw std::runtime_error(directory.u8string() + ": cannot create scenario directory: " + ec.message());
     write_file(directory / "locations.csv", locations.str());
     write_file(directory / "roads.csv", roads.str());
     write_file(directory / "facilities.csv", facilities.str());
+    write_file(directory / "window_services.csv", window_services.str());
 }
 void CampusEnvironment::replace_scenario(CampusScenario next) {
     validate(next);
