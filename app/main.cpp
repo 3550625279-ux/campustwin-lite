@@ -1,6 +1,7 @@
 #include "campustwin/environment.hpp"
 #include "campustwin/students.hpp"
 #include "campustwin/resources.hpp"
+#include "campustwin/seats.hpp"
 #include "campustwin/reporting.hpp"
 #include "campustwin/simulation.hpp"
 #include <charconv>
@@ -20,20 +21,22 @@ int run(const std::vector<std::string>& args) {
     std::filesystem::path output = "outputs/mvp";
     SimulationSettings settings;
     std::optional<LunchPolicy> policy;
+    std::optional<std::filesystem::path> schedule_file;
     std::string route_from, route_to;
     std::set<std::string> seen;
     for (std::size_t i = 1; i < args.size(); ++i) {
         const auto& option = args[i];
         if (option == "--help") {
-            std::cout << "CampusTwin Lite: run the lunch simulation.\n"
+            std::cout << "CampusTwin Lite: run campus travel, activities and services.\n"
                       << "campustwin [--scenario DIR] [--students FILE] [--duration MINUTES] [--output DIR]\n"
                       << "           [--policy fixed|nearest|fastest]\n"
+                      << "           [--schedule FILE] (ordered activities; optional seats.csv in scenario)\n"
                       << "campustwin [--scenario DIR] --route FROM TO\n"
                       << "Defaults: data/scenarios/mvp, data/students/mvp.csv, 120, outputs/mvp.\n"
                       << "Existing result files are never overwritten.\n";
             return 0;
         }
-        if (option != "--scenario" && option != "--students" && option != "--duration" && option != "--output" && option != "--route" && option != "--policy")
+        if (option != "--scenario" && option != "--students" && option != "--duration" && option != "--output" && option != "--route" && option != "--policy" && option != "--schedule")
             throw ValidationError("unknown option: " + option);
         if (!seen.insert(option).second) throw ValidationError("duplicate option: " + option);
         if (++i == args.size() || args[i].empty()) throw ValidationError("missing value for " + option);
@@ -44,6 +47,7 @@ int run(const std::vector<std::string>& args) {
         }
         else if (option == "--scenario") scenario = std::filesystem::u8path(args[i]);
         else if (option == "--students") population_file = std::filesystem::u8path(args[i]);
+        else if (option == "--schedule") schedule_file = std::filesystem::u8path(args[i]);
         else if (option == "--output") output = std::filesystem::u8path(args[i]);
         else if (option == "--policy") {
             if (args[i] == "fixed") policy = LunchPolicy::Fixed;
@@ -59,7 +63,7 @@ int run(const std::vector<std::string>& args) {
         }
     }
     CampusEnvironment environment;
-    if (seen.count("--route") && (seen.count("--students") || seen.count("--duration") || seen.count("--output") || seen.count("--policy")))
+    if (seen.count("--route") && (seen.count("--students") || seen.count("--duration") || seen.count("--output") || seen.count("--policy") || schedule_file))
         throw ValidationError("--route cannot be combined with simulation options");
     environment.load_directory(scenario);
     if (seen.count("--route")) {
@@ -77,16 +81,20 @@ int run(const std::vector<std::string>& args) {
     }
     auto population = read_student_specs(population_file);
     if (policy) for (auto& student : population) student.lunch_policy = *policy;
+    if (schedule_file) population = read_schedules(*schedule_file, population);
     StudentEngine students;
     FacilityEngine facilities;
-    CsvRunWriter writer(output);
+    SeatEngine seats;
+    const bool detailed = schedule_file.has_value() || !environment.scenario().seat_pools.empty();
+    CsvRunWriter writer(output, detailed);
     try {
-        SimulationRunner{}.run(settings, environment, population, students, facilities, writer);
+        SimulationRunner{}.run(settings, environment, population, students, facilities, writer, &seats);
     } catch (const std::exception& error) {
         throw std::runtime_error(std::string("run failed; any output may be incomplete: ") + error.what());
     }
     std::cout << "Simulation complete: " << population.size() << " students, "
-              << settings.duration_minutes << " minutes; five CSV files written to " << output.u8string() << '\n';
+              << settings.duration_minutes << " minutes; " << (detailed ? "eight" : "five")
+              << " CSV files written to " << output.u8string() << '\n';
     return 0;
 }
 }  // namespace
