@@ -18,6 +18,8 @@ UTF-8 文本，无 BOM；第一行为固定表头；逗号分隔。首版字段�
 
 `replace_scenario` 与加载文件使用同一套校验。保存只写上述三份静态文件；学生配置归 B，运行结果不回写到场景。
 
+可选 `window_services.csv` 与学生第九列 `meal_type` 的格式、校验和兼容规则见 [第二阶段服务指南](15_COMPLEX_SERVICES.md)。
+
 ## 学生文件（B）
 
 `data/students/mvp.csv` 表头：
