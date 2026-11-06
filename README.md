@@ -1,10 +1,41 @@
 # CampusTwin Lite
 
-基于 C++17 的校园午餐出行与服务仿真项目。学生从不同地点出发，可以选择固定、最近或预计最快的食堂；程序模拟出行、排队、窗口服务、就餐和返回，并记录路线、选择依据与实际结果。
+基于 C++17 的校园出行、活动与服务仿真项目。学生可以在教学楼、食堂、图书馆和宿舍之间执行有顺序的日程，按路线、餐品和预计等待选择食堂，在窗口和座位资源上排队，并把延迟传递到后续活动。
 
-**当前提供四个可运行场景：**原始 20 人单食堂 MVP、40 人双食堂窗口/速度对照、60 人动态选食堂，以及 60 人三食堂餐品与窗口服务场景。实验可生成 CSV 和离线 HTML 图表报告。所有场景都是合成数据。
+**已完成约定的三个升级阶段：动态选食堂、复杂服务、多活动日程与座位。**保留原始 20 人 MVP、双食堂、动态校园、异质服务校园；新增 16 地点、38 道路、36 人、216 活动的日程校园。实验包含道路封闭后的另一张地图，生成 CSV、离线 HTML 对照报告、逐人状态时间线和路线示意图。所有场景都是合成数据。
 
-程序由校园环境、学生行为和食堂资源三个模块组成，由统一调度器连接。动态决策使用出发前的队列和窗口快照；预测不包含未来到达者。暂不支持自行车、中途换食堂或完整一天的日程。
+程序由校园环境、学生行为和资源服务三个模块组成，由统一调度器连接。动态决策使用上一分钟的队列和窗口快照；`fastest` 预测到窗口服务结束，不预测未来到达者或座位等待。日程当前包含一次午餐及任意多次上课、学习、休息；不包含自行车、校车、中途换食堂或跨日循环。
+
+## 一次运行全部阶段
+
+在仓库根目录执行（C++17、CMake 3.16+、Python 3.9+，无需额外 Python 包）：
+
+```bash
+cmake -S . -B build
+cmake --build build --config Debug
+ctest --test-dir build -C Debug --output-on-failure
+python3 tools/run_all_stages.py --executable build/campustwin --output outputs/all_stages
+```
+
+Windows PowerShell（Ninja/MinGW）：最后一条改为：
+
+```powershell
+py -3 tools/run_all_stages.py --executable .\build\campustwin.exe --output .\outputs\all_stages
+Start-Process .\outputs\all_stages\report.html
+```
+
+Visual Studio 生成器的程序一般是 `.\build\Debug\campustwin.exe`。输出目录必须尚不存在；再次运行请换一个目录。`report.html` 是所有实验的总入口，各实验保留输入副本和原始输出。完整验收仍使用 CTest，当前共 19 项。
+
+## 第三阶段：日程与座位
+
+```bash
+./build/campustwin --scenario data/scenarios/campus_day --students data/students/campus_day.csv --schedule data/schedules/campus_day.csv --duration 160 --output outputs/campus_day
+python3 tools/run_schedule_experiments.py --executable build/campustwin --output outputs/schedule_demo
+```
+
+单次仿真产出八份 CSV；第二条生成四组对照和可选择学生、方案的离线报告。基准的 36 名学生、216 项活动全部完成；图书馆座位翻倍后，样例总座位等待从 885 降至 357 分钟，最后完成时刻从 124 降至 94。该结论仅针对此合成输入。
+
+日程格式、状态机、座位事件顺序和三模块完成度见 [多活动日程指南与验收](docs/16_ACTIVITY_SCHEDULES.md)。不传 `--schedule` 且不配置 `seats.csv` 时，原始午餐行为及五份 CSV 保持兼容。
 
 A 支持本地账号、场景编辑、CSV 保存与加载以及最短路径查询，详见 [A 部分交付说明](docs/A_DELIVERY.md)。B 支持学生数据读取、移动、服务事件响应和状态快照，详见 [B 模块实现与使用](docs/11_B_STUDENT_MVP.md)。
 
@@ -174,4 +205,4 @@ python3 tests/check_mvp_outputs.py outputs/mvp
 
 运行成功后，输出目录包含 `events.csv`、`student_snapshots.csv`、`facility_snapshots.csv`、`summary.csv` 和新增的 `decisions.csv`。程序拒绝覆盖已有的结果文件；再次运行请指定新目录。若运行报错，已生成的文件可能不完整，不能作为成功结果。`--help` 可查看默认参数。
 
-A 的 `demo_a` 提供本地账号和场景编辑；统一仿真 CLI 读取配置并运行，不提供账号角色权限。角色权限、完整一天、更多设施和课程最终提交材料仍待后续完成与人工核对。
+A 的 `demo_a` 提供本地账号和场景编辑；统一仿真 CLI 读取配置并运行，不提供账号角色权限。三个功能升级阶段的完成不代表课程最终材料、统一账号菜单或所有未来设想已经完成；课程要求仍按原检查表人工核对。

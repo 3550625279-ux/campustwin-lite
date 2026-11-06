@@ -9,6 +9,6 @@ public:
              const std::vector<StudentSpec>& population,
              IStudentEngine& students,
              IFacilityEngine& facilities,
-             IRunWriter& writer) const;
+             IRunWriter& writer, ISeatEngine* seats = nullptr) const;
 };
 }  // namespace campustwin

@@ -1,5 +1,7 @@
 # 样例数据
 
+新增 `scenarios/campus_day/`、`students/campus_day.csv` 和 `schedules/campus_day.csv`：36 人、216 活动、有限座位及扩展地图，格式和行为见 [第三阶段说明](../docs/16_ACTIVITY_SCHEDULES.md)。
+
 所有输入均为自拟仿真数据，不含真实学生资料。
 
 - `scenarios/mvp/`：A 加载的地点、道路、设施。

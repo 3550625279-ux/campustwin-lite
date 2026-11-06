@@ -150,6 +150,59 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file) {
     return result;
 }
 
+std::vector<StudentSpec> read_schedules(const std::filesystem::path& file,
+                                      const std::vector<StudentSpec>& population) {
+    std::ifstream input(file);
+    if (!input) throw ValidationError("cannot open schedule file: " + file.u8string());
+    std::string line;
+    if (!std::getline(input, line)) invalid("schedule", "missing header");
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line != "student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat")
+        invalid("schedule", "unexpected schedule CSV header");
+    auto result = population;
+    std::map<StudentId, std::map<SimTime, ActivitySpec>> schedules;
+    for (auto& spec : result) {
+        if (!schedules.emplace(spec.id, std::map<SimTime, ActivitySpec>{}).second)
+            invalid("schedule", "duplicate student");
+        spec.activities.clear();
+    }
+    std::size_t number = 1;
+    while (std::getline(input, line)) {
+        ++number;
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) continue;
+        const auto context = file.u8string() + ":" + std::to_string(number);
+        const auto f = split_row(line, context, 8);
+        if (!schedules.count(f[0])) invalid(context, "unknown schedule student");
+        ActivitySpec a;
+        a.id = f[2]; check_id(a.id, context + " activity_id");
+        if (f[3] == "class") a.kind = ActivityKind::Class;
+        else if (f[3] == "study") a.kind = ActivityKind::Study;
+        else if (f[3] == "rest") a.kind = ActivityKind::Rest;
+        else if (f[3] == "lunch") a.kind = ActivityKind::Lunch;
+        else invalid(context, "kind must be class, study, rest or lunch");
+        a.location_id = f[4];
+        a.start_minute = parse_time(f[5], 0, context + " start_minute");
+        a.duration_minutes = parse_time(f[6], 1, context + " duration_minutes");
+        if (f[7] != "0" && f[7] != "1") invalid(context, "requires_seat must be 0 or 1");
+        a.requires_seat = f[7] == "1";
+        const auto sequence = parse_time(f[1], 1, context + " sequence");
+        if (!schedules.at(f[0]).emplace(sequence, std::move(a)).second)
+            invalid(context, "duplicate schedule sequence");
+    }
+    if (input.bad()) invalid("schedule", "read failed");
+    for (auto& spec : result) {
+        const auto& rows = schedules.at(spec.id);
+        if (rows.empty()) invalid("schedule " + spec.id, "every student needs a schedule");
+        std::int64_t expected = 1;
+        for (const auto& row : rows) {
+            if (row.first != expected++) invalid("schedule " + spec.id, "sequence must be contiguous from 1");
+            spec.activities.push_back(row.second);
+        }
+    }
+    return result;
+}
+
 void StudentEngine::reset(const CampusScenario& scenario,
                           const std::vector<StudentSpec>& population) {
     std::unordered_map<LocationId, LocationKind> locations;
@@ -157,6 +210,12 @@ void StudentEngine::reset(const CampusScenario& scenario,
         check_id(location.id, "scenario location");
         if (!locations.emplace(location.id, location.kind).second)
             invalid("scenario", "duplicate location ID: " + location.id);
+    }
+    std::unordered_map<LocationId, std::size_t> seat_capacities;
+    for (const auto& pool : scenario.seat_pools) {
+        if (!locations.count(pool.location_id) || pool.capacity == 0 || pool.capacity > max_facility_windows ||
+            !seat_capacities.emplace(pool.location_id, pool.capacity).second)
+            invalid("student engine", "invalid seat pool");
     }
     std::unordered_map<FacilityId, FacilityConfig> facilities;
     std::unordered_set<LocationId> facility_locations;
@@ -199,17 +258,46 @@ void StudentEngine::reset(const CampusScenario& scenario,
             invalid(context, "fixed lunch facility is unknown");
         if (spec.lunch_policy == LunchPolicy::Fixed && !facility_serves(facility->second, spec.meal_type))
             invalid(context, "fixed lunch facility cannot serve requested meal");
-        if (spec.lunch_policy == LunchPolicy::Fixed &&
+        if (spec.activities.empty() && spec.lunch_policy == LunchPolicy::Fixed &&
             (spec.initial_location == facility->second.location_id ||
              spec.after_meal_location == facility->second.location_id))
             invalid(context, "both lunch trips must have distinct endpoints");
-        if (spec.lunch_policy != LunchPolicy::Fixed &&
+        if (spec.activities.empty() && spec.lunch_policy != LunchPolicy::Fixed &&
             std::none_of(facilities.begin(), facilities.end(), [&](const auto& item) {
                 return item.second.location_id != spec.initial_location &&
                        item.second.location_id != spec.after_meal_location;
             })) invalid(context, "no eligible lunch facility");
         StudentRuntime student;
         student.spec = spec;
+        std::set<std::string> activity_ids;
+        std::size_t lunches = 0;
+        SimTime previous = -1;
+        for (const auto& activity : spec.activities) {
+            check_id(activity.id, context + " activity ID");
+            if (!activity_ids.insert(activity.id).second || activity.start_minute < 0 ||
+                activity.start_minute < previous || activity.duration_minutes <= 0)
+                invalid(context, "invalid activity ID, duration or start order");
+            checked_add(activity.start_minute, activity.duration_minutes, context + " activity");
+            previous = activity.start_minute;
+            if (activity.kind == ActivityKind::Lunch) {
+                ++lunches;
+                if (!activity.location_id.empty() || activity.requires_seat)
+                    invalid(context, "lunch location must be empty and requires_seat must be 0 (automatic)");
+            } else {
+                const auto found = locations.find(activity.location_id);
+                const bool valid_kind = found != locations.end() &&
+                    ((activity.kind == ActivityKind::Class && found->second == LocationKind::Teaching) ||
+                     (activity.kind == ActivityKind::Study && found->second == LocationKind::Library) ||
+                     (activity.kind == ActivityKind::Rest && found->second == LocationKind::Dormitory));
+                if (!valid_kind) invalid(context, "activity location kind does not match");
+                if (activity.requires_seat && !seat_capacities.count(activity.location_id))
+                    invalid(context, "activity requires a configured seat pool");
+            }
+            ActivityRecord record;
+            record.student_id = spec.id; record.activity = activity; record.destination = activity.location_id;
+            student.records.push_back(std::move(record));
+        }
+        if (!spec.activities.empty() && lunches != 1) invalid(context, "schedule must contain exactly one lunch");
         if (spec.lunch_policy == LunchPolicy::Fixed) {
             student.selected_facility = facility->second.id;
             student.canteen_location = facility->second.location_id;
@@ -235,6 +323,8 @@ void StudentEngine::reset(const CampusScenario& scenario,
     student_indices_.swap(indices);
     facility_configs_.swap(ordered);
     decisions_.clear();
+    seat_requests_.clear();
+    seat_capacities_.swap(seat_capacities);
     initialized_ = true;
     last_tick_ = -1;
     completion_phase_started_ = false;
@@ -248,6 +338,76 @@ StudentEngine::StudentRuntime& StudentEngine::find_student(const StudentId& id) 
     const auto found = student_indices_.find(id);
     if (found == student_indices_.end()) invalid("service event", "unknown student: " + id);
     return students_[found->second];
+}
+
+void StudentEngine::finish_activity(StudentRuntime& student, SimTime now) {
+    student.records.at(student.activity_index).completed_at = now;
+    ++student.activity_index;
+    student.activity_until.reset(); student.eating_until.reset();
+    student.seat_request.reset(); student.seat_enqueued = false; student.occupied_seat.reset();
+    student.state = student.activity_index == student.records.size() ? StudentState::Finished : StudentState::AtLocation;
+}
+
+void StudentEngine::start_activity(StudentRuntime& student, SimTime now) {
+    auto& record = student.records.at(student.activity_index);
+    if (record.activity.requires_seat) {
+        student.seat_request = SeatRequest{student.spec.id + ":activity:" + record.activity.id,
+            student.spec.id, *student.location, now, record.activity.duration_minutes};
+        student.seat_enqueued = false;
+        student.state = StudentState::WaitingSeat;
+    } else {
+        student.activity_until = checked_add(now, record.activity.duration_minutes, "activity end");
+        record.started_at = now;
+        student.state = StudentState::InActivity;
+    }
+}
+
+// Return false only when the shared lunch/seat machinery must handle this tick.
+bool StudentEngine::advance_schedule(StudentRuntime& student, SimTime now, const IRouteProvider& routes) {
+    if (student.activity_index == student.records.size()) return true;
+    auto& record = student.records.at(student.activity_index);
+    if (record.activity.kind == ActivityKind::Lunch) {
+        if (student.state == StudentState::Eating && now == *student.eating_until) {
+            finish_activity(student, now);
+            return advance_schedule(student, now, routes);
+        }
+        if (student.state == StudentState::AtLocation) {
+            if (now < record.activity.start_minute) return true;
+            student.spec.departure_minute = now;
+            student.spec.meal_minutes = record.activity.duration_minutes;
+        }
+        return false;
+    }
+    if (student.state == StudentState::InActivity) {
+        if (now == *student.activity_until) {
+            finish_activity(student, now);
+            return advance_schedule(student, now, routes);
+        }
+        return true;
+    }
+    if (student.state == StudentState::WaitingSeat) return false;
+    if (student.state == StudentState::Moving) {
+        if (now != student.move->arrive_at) return true;
+        student.location = student.move->to; student.move.reset();
+        record.arrived_at = now; student.state = StudentState::AtLocation;
+    }
+    if (student.state != StudentState::AtLocation) invalid("schedule", "unexpected activity state");
+    if (*student.location != record.destination) {
+        const auto movement = plan_move(routes, *student.location, record.destination, now,
+                                        student.spec.walk_m_per_min, student.spec.id);
+        const auto duration = movement.arrive_at - now;
+        if (now < record.activity.start_minute - duration) return true;
+        record.departed_at = now; record.distance_m = movement.distance_m;
+        record.path = routes.find_route(*student.location, record.destination).path;
+        student.move = movement; student.location.reset(); student.state = StudentState::Moving;
+        return true;
+    }
+    if (!record.arrived_at) {
+        record.arrived_at = now; record.departed_at = now; record.path = {*student.location};
+    }
+    if (now < record.activity.start_minute) return true;
+    start_activity(student, now);
+    return student.state != StudentState::WaitingSeat;
 }
 
 std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvider& routes) {
@@ -264,6 +424,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
     auto next = students_;
     std::vector<StudentArrival> arrivals;
     std::vector<LunchDecision> next_decisions;
+    std::vector<SeatRequest> next_seat_requests;
     std::map<FacilityId, FacilityDecisionStatus> status_by_id;
     if (advisor) {
         for (const auto& status : advisor->statuses()) {
@@ -279,6 +440,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
             invalid("student decisions", "incomplete facility snapshot");
     }
     for (auto& student : next) {
+        if (!student.spec.activities.empty() && advance_schedule(student, now, routes)) continue;
         switch (student.state) {
         case StudentState::AtLocation:
             if (now == student.spec.departure_minute) {
@@ -300,8 +462,8 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                         decision.observed_at = status.observed_at;
                         decision.queue_length = status.queue_length;
                     }
-                    if (*student.location == config.location_id ||
-                        student.spec.after_meal_location == config.location_id) {
+                    if (student.spec.activities.empty() && (*student.location == config.location_id ||
+                        student.spec.after_meal_location == config.location_id)) {
                         decision.reason = "invalid_endpoint";
                         next_decisions.push_back(std::move(decision));
                         continue;
@@ -317,13 +479,15 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                         next_decisions.push_back(std::move(decision));
                         continue;
                     }
-                    if (!std::isfinite(route.distance_m) || route.distance_m <= 0.0)
+                    const bool same_location = *student.location == config.location_id;
+                    if (!std::isfinite(route.distance_m) ||
+                        (same_location ? route.distance_m != 0.0 : route.distance_m <= 0.0))
                         invalid("student " + student.spec.id, "expected a finite positive route distance");
-                    const double minutes = std::max(1.0, std::ceil(route.distance_m / student.spec.walk_m_per_min));
+                    const double minutes = same_location ? 0.0 : std::max(1.0, std::ceil(route.distance_m / student.spec.walk_m_per_min));
                     if (!std::isfinite(minutes) || minutes > std::numeric_limits<SimTime>::max())
                         invalid("student " + student.spec.id, "travel duration is outside the supported range");
                     const auto travel = static_cast<SimTime>(minutes);
-                    const auto arrival = checked_add(now, travel, "student travel");
+                    const auto arrival = travel == 0 ? now : checked_add(now, travel, "student travel");
                     decision.distance_m = route.distance_m;
                     decision.path = route.path;
                     decision.travel_minutes = travel;
@@ -361,10 +525,21 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                 student.canteen_location = found->location_id;
                 student.service_minutes = found->service_minutes;
                 student.window_count = found->window_count;
-                student.move = MoveInfo{*student.location, found->location_id, now,
-                    checked_add(now, *chosen.travel_minutes, "student travel"), *chosen.distance_m};
-                student.location.reset();
-                student.state = StudentState::Moving;
+                if (!student.records.empty()) {
+                    auto& record = student.records.at(student.activity_index);
+                    record.destination = found->location_id; record.departed_at = now; record.started_at = now;
+                    record.distance_m = *chosen.distance_m; record.path = chosen.path;
+                }
+                if (*chosen.travel_minutes == 0) {
+                    student.state = StudentState::Queued; student.arrived_at = now;
+                    if (!student.records.empty()) student.records.at(student.activity_index).arrived_at = now;
+                    arrivals.push_back({student.request_id, student.spec.id, student.selected_facility, now, student.spec.meal_type});
+                } else {
+                    student.move = MoveInfo{*student.location, found->location_id, now,
+                        checked_add(now, *chosen.travel_minutes, "student travel"), *chosen.distance_m};
+                    student.location.reset();
+                    student.state = StudentState::Moving;
+                }
             }
             break;
         case StudentState::Moving:
@@ -376,6 +551,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                 } else {
                     student.state = StudentState::Queued;
                     student.arrived_at = now;
+                    if (!student.records.empty()) student.records.at(student.activity_index).arrived_at = now;
                     arrivals.push_back({student.request_id, student.spec.id,
                                         student.selected_facility, now, student.spec.meal_type});
                 }
@@ -383,6 +559,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
             break;
         case StudentState::Eating:
             if (now == *student.eating_until) {
+                student.occupied_seat.reset(); student.seat_request.reset(); student.seat_enqueued = false;
                 student.move = plan_move(routes, *student.location, student.spec.after_meal_location,
                                          now, student.spec.walk_m_per_min, student.spec.id);
                 student.location.reset();
@@ -390,6 +567,13 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
                 student.state = StudentState::Moving;
             }
             break;
+        case StudentState::WaitingSeat:
+            if (!student.seat_enqueued) {
+                next_seat_requests.push_back(*student.seat_request);
+                student.seat_enqueued = true;
+            }
+            break;
+        case StudentState::InActivity:
         case StudentState::Queued:
         case StudentState::InService:
         case StudentState::Finished:
@@ -398,6 +582,7 @@ std::vector<StudentArrival> StudentEngine::tick(SimTime now, const IRouteProvide
     }
     students_.swap(next);
     decisions_.swap(next_decisions);
+    seat_requests_.swap(next_seat_requests);
     last_tick_ = now;
     completion_phase_started_ = false;
     return arrivals;
@@ -443,9 +628,17 @@ void StudentEngine::on_service_completed(const ServiceCompleted& event) {
     const auto expected_at = checked_add(student.service->at, student.service_minutes, "service completion");
     if (event.window_id != student.service->window_id || event.at != expected_at)
         invalid("service completion", "window or completion time does not match the started service");
-    const auto eating_until = checked_add(event.at, student.spec.meal_minutes, "meal completion");
-    student.eating_until = eating_until;
-    student.state = StudentState::Eating;
+    if (seat_capacities_.count(student.canteen_location)) {
+        // Positive occupancy duration is checked again when a seat is actually granted.
+        checked_add(event.at, student.spec.meal_minutes, "meal completion");
+        student.seat_request = SeatRequest{student.request_id + ":seat", student.spec.id,
+            student.canteen_location, event.at, student.spec.meal_minutes};
+        student.seat_enqueued = false;
+        student.state = StudentState::WaitingSeat;
+    } else {
+        student.eating_until = checked_add(event.at, student.spec.meal_minutes, "meal completion");
+        student.state = StudentState::Eating;
+    }
     completion_phase_started_ = true;
 }
 
@@ -458,7 +651,7 @@ std::vector<StudentSnapshot> StudentEngine::snapshots(SimTime now) const {
     for (const auto& student : students_) {
         const auto selected = student.selected_facility.empty() ? std::optional<FacilityId>{} :
             std::optional<FacilityId>{student.selected_facility};
-        result.push_back({now, student.spec.id, student.state, student.location, student.move, selected});
+        result.push_back({now, student.spec.id, student.state, student.location, student.move, selected, student.occupied_seat});
     }
     return result;
 }
@@ -468,5 +661,47 @@ std::vector<LunchDecision> StudentEngine::decisions(SimTime now) const {
     if (last_tick_ < 0 || now != last_tick_ || completion_phase_started_)
         invalid("student decisions", "read decisions for the completed current tick");
     return decisions_;
+}
+
+std::vector<SeatRequest> StudentEngine::seat_requests(SimTime now) const {
+    require_initialized();
+    if (now != last_tick_ || completion_phase_started_) invalid("seat requests", "read after current tick");
+    return seat_requests_;
+}
+
+void StudentEngine::on_seat_granted(const SeatGranted& grant) {
+    require_initialized();
+    if (last_tick_ < 0 || grant.at != last_tick_ || completion_phase_started_)
+        invalid("seat grant", "notify grants after current tick");
+    auto& student = find_student(grant.request.student_id);
+    if (student.state != StudentState::WaitingSeat || !student.seat_request || !student.seat_enqueued)
+        invalid("seat grant", "student is not waiting for a seat");
+    const auto& request = *student.seat_request;
+    if (grant.request.request_id != request.request_id || grant.request.location_id != request.location_id ||
+        grant.request.at != request.at || grant.request.duration_minutes != request.duration_minutes ||
+        grant.at < request.at || grant.until != checked_add(grant.at, request.duration_minutes, "seat grant"))
+        invalid("seat grant", "request or occupancy time mismatch");
+    student.occupied_seat = request.location_id;
+    const bool lunch = student.records.empty() ||
+        student.records.at(student.activity_index).activity.kind == ActivityKind::Lunch;
+    if (lunch) { student.eating_until = grant.until; student.state = StudentState::Eating; }
+    else { student.activity_until = grant.until; student.state = StudentState::InActivity; }
+    if (!student.records.empty()) {
+        auto& record = student.records.at(student.activity_index);
+        record.seat_wait_minutes = grant.at - request.at;
+        if (!lunch) record.started_at = grant.at;
+    }
+}
+
+std::vector<ActivityRecord> StudentEngine::activity_records() const {
+    require_initialized();
+    std::vector<ActivityRecord> records;
+    for (const auto& student : students_) {
+        auto current = student.records;
+        if (!current.empty() && student.state == StudentState::WaitingSeat && student.seat_request)
+            current.at(student.activity_index).seat_wait_minutes = last_tick_ - student.seat_request->at;
+        records.insert(records.end(), current.begin(), current.end());
+    }
+    return records;
 }
 }  // namespace campustwin

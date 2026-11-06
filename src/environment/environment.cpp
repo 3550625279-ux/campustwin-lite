@@ -194,6 +194,13 @@ void validate(const CampusScenario& scenario, const Context* source = nullptr) {
         require(facility.window_services.empty() || covered_windows.size() == facility.window_count,
                 context, "every configured window must offer at least one meal");
     }
+    std::set<LocationId> seat_locations;
+    for (const auto& seats : scenario.seat_pools) {
+        require(locations.count(seats.location_id) != 0, "seat pool", "unknown location " + seats.location_id);
+        require(seats.capacity > 0 && seats.capacity <= max_facility_windows,
+                "seat pool", "capacity must be 1..100000");
+        require(seat_locations.insert(seats.location_id).second, "seat pool", "duplicate location");
+    }
 }
 bool same_edge(const Road& road, const LocationId& a, const LocationId& b) {
     return (road.from == a && road.to == b) || (road.from == b && road.to == a);
@@ -242,12 +249,19 @@ void CampusEnvironment::load_directory(const std::filesystem::path& directory) {
                 f[2], static_cast<SimTime>(integer(f[3], context + " service_minutes"))});
         }
     }
+    const auto sp = directory / "seats.csv";
+    const bool has_seats = std::filesystem::exists(sp, ec);
+    if (ec) throw std::runtime_error(sp.u8string() + ": cannot inspect seats: " + ec.message());
+    if (has_seats) for (const auto& row : read_csv(sp, "location_id,capacity", 2, max_locations)) {
+        next.seat_pools.push_back({row.fields[0], static_cast<std::size_t>(
+            integer(row.fields[1], row_context(sp, row.line) + " capacity"))});
+    }
     validate(next, &source);
     replace_scenario(std::move(next));
 }
 void CampusEnvironment::save_directory(const std::filesystem::path& directory) const {
     validate(scenario_);
-    std::ostringstream locations, roads, facilities, window_services;
+    std::ostringstream locations, roads, facilities, window_services, seats;
     locations.imbue(std::locale::classic()); roads.imbue(std::locale::classic()); facilities.imbue(std::locale::classic());
     locations << "id,name,kind,capacity\n";
     for (const auto& l : scenario_.locations) locations << l.id << ',' << l.name << ',' << kind_text(l.kind) << ',' << l.capacity << '\n';
@@ -258,6 +272,9 @@ void CampusEnvironment::save_directory(const std::filesystem::path& directory) c
     window_services << "facility_id,window_id,meal_type,service_minutes\n";
     for (const auto& f : scenario_.facilities) for (const auto& s : f.window_services)
         window_services << f.id << ',' << s.window_id << ',' << s.meal_type << ',' << s.service_minutes << '\n';
+    seats.imbue(std::locale::classic());
+    seats << "location_id,capacity\n";
+    for (const auto& pool : scenario_.seat_pools) seats << pool.location_id << ',' << pool.capacity << '\n';
     require(locations.str().size() <= max_csv_bytes && roads.str().size() <= max_csv_bytes && facilities.str().size() <= max_csv_bytes && window_services.str().size() <= max_csv_bytes, "save_directory", "serialized CSV exceeds 32 MiB limit");
     std::error_code ec;
     std::filesystem::create_directories(directory, ec);
@@ -266,6 +283,7 @@ void CampusEnvironment::save_directory(const std::filesystem::path& directory) c
     write_file(directory / "roads.csv", roads.str());
     write_file(directory / "facilities.csv", facilities.str());
     write_file(directory / "window_services.csv", window_services.str());
+    write_file(directory / "seats.csv", seats.str());
 }
 void CampusEnvironment::replace_scenario(CampusScenario next) {
     validate(next);

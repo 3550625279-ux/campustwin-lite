@@ -256,6 +256,8 @@ def run(args):
         raise ValueError("speed multiplier must be finite and positive")
     if output.exists():
         raise ValueError(f"output directory already exists: {output}; choose a new directory")
+    if (scenario / "seats.csv").exists() and read_csv(scenario / "seats.csv"):
+        raise ValueError("seat-constrained scenarios require run_schedule_experiments.py")
     if (scenario / "window_services.csv").exists() and read_csv(scenario / "window_services.csv"):
         raise ValueError("window-count experiment requires homogeneous windows; use run_service_experiments.py")
     population, facilities = read_csv(students), read_csv(scenario / "facilities.csv")
