@@ -8,6 +8,9 @@ if(MSVC)
     add_compile_options(/W4 /permissive- /utf-8)
 else()
     add_compile_options(-Wall -Wextra -Wpedantic)
+    if(MINGW)
+        add_link_options(-static)
+    endif()
 endif()
 
 add_library(campustwin_contracts INTERFACE)
@@ -21,9 +24,15 @@ endforeach()
 
 target_sources(campustwin_environment PRIVATE src/environment/accounts.cpp)
 target_sources(campustwin_resources PRIVATE src/resources/seats.cpp)
+
+add_library(campustwin_tui STATIC src/tui/tui.cpp)
+target_link_libraries(campustwin_tui PUBLIC campustwin_contracts
+    PRIVATE campustwin_environment campustwin_students campustwin_resources
+            campustwin_reporting campustwin_simulation)
+
 add_executable(campustwin app/main.cpp)
 target_link_libraries(campustwin PRIVATE campustwin_environment campustwin_students
-    campustwin_resources campustwin_reporting campustwin_simulation)
+    campustwin_resources campustwin_reporting campustwin_simulation campustwin_tui)
 if(MINGW)
     target_link_options(campustwin PRIVATE -municode)
 endif()
@@ -107,4 +116,8 @@ if(BUILD_TESTING)
     add_test(NAME all_stage_experiments COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_all_stages.py
         $<TARGET_FILE:campustwin> ${CMAKE_CURRENT_SOURCE_DIR})
+    add_executable(tui_tests tests/tui_tests.cpp)
+    target_link_libraries(tui_tests PRIVATE campustwin_tui campustwin_environment
+        campustwin_students campustwin_resources campustwin_reporting campustwin_simulation)
+    add_test(NAME tui_workbench COMMAND tui_tests ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

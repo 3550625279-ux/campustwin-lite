@@ -75,7 +75,7 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-当前 CTest 包含 **19 项检查**，覆盖模块行为、真实联调、异常输入、原 MVP 和各组对照实验。成功时显示 `100% tests passed`。只编译可在配置时加 `-DBUILD_TESTING=OFF`；此时不要求 Python，但不会执行验收，实验报告仍需要 Python。
+当前 CTest 包含 **20 项检查**，覆盖模块行为、真实联调、异常输入、原 MVP、各组对照实验以及交互式命令行工作台（TUI）。成功时显示 `100% tests passed`。只编译可在配置时加 `-DBUILD_TESTING=OFF`；此时不要求 Python，但不会执行验收，实验报告仍需要 Python。
 
 | 构建方式 | 主程序常见路径 |
 | --- | --- |
@@ -86,6 +86,18 @@ ctest --test-dir build -C Debug --output-on-failure
 单配置生成器使用配置阶段的 `CMAKE_BUILD_TYPE`；Visual Studio 等多配置生成器使用构建阶段的 `--config Debug`。切换生成器时用新的构建目录，避免旧缓存冲突。
 
 ## 运行与查看结果
+
+### 启动交互式命令行前端工作台（TUI）
+
+不带参数直接运行主程序，或显式传入 `--ui`，即可进入纯 C++17 交互式终端工作台（支持五套预设场景一键切换、逐分钟动态态势看板与拥堵峰值跳转、单人全天日程与选食堂决策透视、四组控制变量内存对照实验、Dijkstra 最短路矩阵、管理员沙盒场景编辑与 PBKDF2 本地账号权限）：
+
+```bash
+./build/campustwin
+# 或显式指定初始场景进入交互台：
+./build/campustwin --ui --scenario data/scenarios/campus_day
+```
+
+Windows PowerShell 直接运行 `.\build\campustwin.exe`（Visual Studio 多配置构建为 `.\build\Debug\campustwin.exe`）。
 
 ### 一次运行全部实验
 
