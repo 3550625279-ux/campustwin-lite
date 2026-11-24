@@ -37,7 +37,10 @@ CampusScenario scene() {
     return result;
 }
 StudentSpec spec(std::string id = "S001") {
-    return {std::move(id), "L_T1", "F_CANTEEN", "L_DORM", 0, 60.0, 5};
+    StudentSpec s{std::move(id), "L_T1", "F_CANTEEN", "L_DORM", 0, 60.0, 5};
+    s.activities = {{"lunch", ActivityKind::Lunch, "", 0, 5, false},
+                    {"home", ActivityKind::Rest, "L_DORM", 0, 1, false}};
+    return s;
 }
 class Routes final : public IRouteProvider {
 public:
@@ -170,8 +173,8 @@ int main(int argc, char* argv[]) {
         add([](auto& s) { s.initial_location = "unknown"; });
         add([](auto& s) { s.after_meal_location = "unknown"; });
         add([](auto& s) { s.lunch_facility = "unknown"; });
-        add([](auto& s) { s.initial_location = "L_CANTEEN"; });
-        add([](auto& s) { s.after_meal_location = "L_CANTEEN"; });
+        add([](auto& s) { s.activities.clear(); });
+        add([](auto& s) { s.activities.back().location_id = "L_CANTEEN"; });
         add([](auto& s) { s.departure_minute = -1; });
         add([](auto& s) { s.meal_minutes = 0; });
         add([](auto& s) { s.walk_m_per_min = std::numeric_limits<double>::infinity(); });
@@ -221,7 +224,7 @@ int main(int argc, char* argv[]) {
     });
     test("scheduled departure, ceil travel and one arrival request", [&] {
         StudentEngine engine; Routes routes; routes.t1 = 121.0;
-        auto student = spec(); student.departure_minute = 2;
+        auto student = spec(); student.activities[0].start_minute = student.activities[1].start_minute = 2;
         engine.reset(scene(), {student});
         for (SimTime t = 0; t <= 7; ++t) {
             const auto arrivals = engine.tick(t, routes);
@@ -276,7 +279,7 @@ int main(int argc, char* argv[]) {
     });
     test("failed tick rolls back earlier arrivals in the same batch", [&] {
         StudentEngine engine; Routes routes; routes.t1 = 60; routes.t2_reachable = false;
-        auto second = spec("S002"); second.initial_location = "L_T2"; second.departure_minute = 1;
+        auto second = spec("S002"); second.initial_location = "L_T2"; second.activities[0].start_minute = second.activities[1].start_minute = 1;
         engine.reset(scene(), {spec(), second});
         engine.tick(0, routes);
         rejects([&] { engine.tick(1, routes); });
@@ -357,7 +360,7 @@ int main(int argc, char* argv[]) {
             if (t == 5) engine.on_service_started(start_at(5, 3));
             const auto state = t < 2 ? StudentState::Moving : t < 5 ? StudentState::Queued :
                 t < 7 ? StudentState::InService : t < 12 ? StudentState::Eating :
-                t < 14 ? StudentState::Moving : StudentState::Finished;
+                t < 14 ? StudentState::Moving : t == 14 ? StudentState::InActivity : StudentState::Finished;
             shape(engine.snapshots(t).front(), state);
         }
         require(arrivals == 1 && routes.calls == 2, "lunch request or return trip duplicated");
@@ -398,7 +401,7 @@ int main(int argc, char* argv[]) {
         for (SimTime t = 0; t <= 2; ++t) engine.tick(t, routes);
         rejects([&] { engine.on_service_started(start_at()); });
         shape(engine.snapshots(2).front(), StudentState::Queued);
-        auto student = spec(); student.meal_minutes = std::numeric_limits<SimTime>::max();
+        auto student = spec(); student.activities[0].duration_minutes = std::numeric_limits<SimTime>::max();
         engine.reset(scene(), {student});
         for (SimTime t = 0; t <= 2; ++t) engine.tick(t, routes);
         engine.on_service_started(start_at()); engine.tick(3, routes);
@@ -416,7 +419,7 @@ int main(int argc, char* argv[]) {
         require(engine.tick(0, routes).empty() && engine.snapshots(0).empty(), "empty run failed");
     });
     test("canonical 20-student trajectory with EXTERNAL scripted service events", [&] {
-        auto population = read_student_specs(root / "data/students/mvp.csv");
+        auto population = read_scheduled_students(root / "data/students/mvp.csv");
         std::reverse(population.begin(), population.end());
         StudentEngine concrete; IStudentEngine& engine = concrete; Routes routes;
         engine.reset(scene(), population);
@@ -453,7 +456,7 @@ int main(int argc, char* argv[]) {
                 const auto expected = t < arrival ? StudentState::Moving :
                     t < start ? StudentState::Queued : t < end ? StudentState::InService :
                     t < end + 5 ? StudentState::Eating : t < end + 7 ? StudentState::Moving :
-                    StudentState::Finished;
+                    t == end + 7 ? StudentState::InActivity : StudentState::Finished;
                 shape(snapshots[static_cast<std::size_t>(i)], expected);
                 all_finished = all_finished && expected == StudentState::Finished;
                 if (i > 0) require(snapshots[static_cast<std::size_t>(i-1)].student_id <
@@ -462,7 +465,7 @@ int main(int argc, char* argv[]) {
             snapshot_count += snapshots.size();
             if (all_finished && all_finished_at < 0) all_finished_at = t;
         }
-        require(requests.size() == 20 && snapshot_count == 2420 && all_finished_at == 29,
+        require(requests.size() == 20 && snapshot_count == 2420 && all_finished_at == 30,
                 "canonical trajectory anchors failed");
     });
 

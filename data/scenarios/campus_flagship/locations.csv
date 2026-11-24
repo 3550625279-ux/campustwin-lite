@@ -1,0 +1,43 @@
+id,name,kind,capacity
+H1,North teaching commons,Teaching,900
+T1,North teaching building,Teaching,900
+C1,North dining hall,Canteen,720
+L1,North library and study center,Library,480
+D11,North residence 1,Dormitory,520
+D12,North residence 2,Dormitory,520
+D13,North residence 3,Dormitory,520
+H2,Northeast teaching commons,Teaching,900
+T2,Northeast teaching building,Teaching,900
+C2,Northeast dining hall,Canteen,720
+L2,Northeast library and study center,Library,480
+D21,Northeast residence 1,Dormitory,520
+D22,Northeast residence 2,Dormitory,520
+D23,Northeast residence 3,Dormitory,520
+H3,Southeast teaching commons,Teaching,900
+T3,Southeast teaching building,Teaching,900
+C3,Southeast dining hall,Canteen,720
+L3,Southeast library and study center,Library,480
+D31,Southeast residence 1,Dormitory,520
+D32,Southeast residence 2,Dormitory,520
+D33,Southeast residence 3,Dormitory,520
+H4,South teaching commons,Teaching,900
+T4,South teaching building,Teaching,900
+C4,South dining hall,Canteen,720
+L4,South library and study center,Library,480
+D41,South residence 1,Dormitory,520
+D42,South residence 2,Dormitory,520
+D43,South residence 3,Dormitory,520
+H5,Southwest teaching commons,Teaching,900
+T5,Southwest teaching building,Teaching,900
+C5,Southwest dining hall,Canteen,720
+L5,Southwest library and study center,Library,480
+D51,Southwest residence 1,Dormitory,520
+D52,Southwest residence 2,Dormitory,520
+D53,Southwest residence 3,Dormitory,520
+H6,Northwest teaching commons,Teaching,900
+T6,Northwest teaching building,Teaching,900
+C6,Northwest dining hall,Canteen,720
+L6,Northwest library and study center,Library,480
+D61,Northwest residence 1,Dormitory,520
+D62,Northwest residence 2,Dormitory,520
+D63,Northwest residence 3,Dormitory,520

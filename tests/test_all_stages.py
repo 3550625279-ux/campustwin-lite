@@ -1,7 +1,6 @@
 """Verify the one-command delivery, copied inputs and controlled-variable experiments."""
 import csv
 import hashlib
-from html.parser import HTMLParser
 from pathlib import Path
 import subprocess
 import sys
@@ -20,15 +19,6 @@ def inputs():
             for p in (root / "data").rglob("*.csv")}
 
 
-class Links(HTMLParser):
-    def __init__(self):
-        super().__init__(); self.links = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "a":
-            self.links.extend(v for k, v in attrs if k == "href")
-
-
 with tempfile.TemporaryDirectory(prefix="campustwin_all_") as temp:
     output = Path(temp) / "all"
     before = inputs()
@@ -36,11 +26,7 @@ with tempfile.TemporaryDirectory(prefix="campustwin_all_") as temp:
     run = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=120)
     assert run.returncode == 0, (run.stdout, run.stderr)
     assert inputs() == before, "experiments changed committed inputs"
-    for report in output.rglob("report.html"):
-        parser = Links(); parser.feed(report.read_text(encoding="utf-8"))
-        for link in parser.links:
-            if not link.startswith(("http", "#")):
-                assert (report.parent / link).is_file(), (report, link)
+    assert not list(output.rglob("*.html")), "experiment scripts should only generate data"
     day = output / "schedule"
     totals = {r["variant"]: r for r in rows(day / "summary.csv")}
     assert len(totals) == 4 and all(int(r["finished"]) == 36 and int(r["activities_completed"]) == 216 for r in totals.values())
@@ -72,4 +58,4 @@ with tempfile.TemporaryDirectory(prefix="campustwin_all_") as temp:
                                  "--scenario", str(root / "data/scenarios/campus_day"), "--output", str(Path(temp) / script)],
                                 capture_output=True, text=True, encoding="utf-8", timeout=30)
         assert result.returncode != 0 and "seat-constrained" in result.stderr
-print("PASS all-stage experiments, report links, capacity/map controls, cutoff and input preservation")
+print("PASS all-stage experiments, capacity/map controls, cutoff and input preservation")

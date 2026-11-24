@@ -6,14 +6,14 @@
 
 建议围绕一次带日程的实际运行阅读，而不是先逐个读完所有类：
 
-1. `app/main.cpp`：解析参数，加载校园、学生及可选日程；创建环境、学生、窗口、座位和记录器，调用统一运行器。
+1. `app/main.cpp`：解析参数，加载校园、学生及日程；创建环境、学生、窗口、座位和记录器，调用统一运行器。
 2. `include/campustwin/contracts.hpp`：确认输入、事件、快照、记录和纯虚接口的数据形状。
 3. `src/simulation/simulation.cpp`：看每分钟调用顺序与状态守恒，确定下面各模块何时被调用。
 4. `src/students/students.cpp`：追踪一个学生的活动索引、移动、选食堂、服务反馈和座位反馈。
 5. `src/environment/environment.cpp`、`src/resources/resources.cpp`、`src/resources/seats.cpp`：分别追溯路径、窗口和座位的计算。
-6. `src/reporting/reporting.cpp` 与 `tools/run_schedule_experiments.py`：核对这些运行结果怎样成为 CSV、统计和离线报告。
+6. `src/reporting/reporting.cpp` 与 `src/tui/tui.cpp`：核对这些运行结果怎样成为 CSV、统计和交互回放。
 
-日程样例对应 `data/scenarios/campus_day/`、`data/students/campus_day.csv`、`data/schedules/campus_day.csv`。只有原午餐输入时，同一程序仍能执行旧行为链。
+日程样例对应 `data/scenarios/campus_day/`、`data/students/campus_day.csv`、`data/schedules/campus_day.csv`。原午餐基准使用配套的午餐和归寝日程。
 
 ## 目录与构建目标
 
@@ -28,7 +28,7 @@
 | `app/` → `campustwin` | 最终集成应用的唯一 `main` |
 | `examples/` → `demo_a`、`demo_b`、`demo_c` | 独立演示入口，分别有自己的 `main` |
 | `data/`、`tests/` | 输入样例、手算参考、模块及集成测试 |
-| `tools/` | 使用真实 C++ 输出生成实验报告 |
+| `tools/` | 生成合成数据，汇总数值回归的 CSV |
 | `docs/`、`.github/` | 设计、格式、使用与协作说明，CI 和提交模板 |
 
 模块编译为静态库，公共契约通过 CMake 的 INTERFACE 目标提供头文件路径与 C++17 要求。新增源文件必须加入对应目标；`accounts.cpp` 和 `seats.cpp` 已分别加入环境库与资源库。业务库不定义 `main`，演示程序不被拼接到主程序内。
@@ -69,7 +69,6 @@
 | 学生取餐后不进入下一状态 | 服务完成事件、是否需要座位、入座反馈和活动截止时间 |
 | 等座人数或窗口计数不一致 | Runner 的守恒检查，是否漏转发或重复处理事件 |
 | 下一项活动迟到 | 前项结束、出行耗时、取餐与等座耗时；查看 `activities.csv` |
-| 输出存在但缺少报告 | 单次 CLI 只写 CSV；HTML 由实验脚本生成 |
 | 输出目录被拒绝 | 结果保护；换一个新输出目录 |
 
 详细接口看 [公共契约说明](04_API_CONTRACT.md)，时间顺序看 [调度流程](06_INTEGRATION.md)，验收范围看 [测试说明](../tests/README.md)。

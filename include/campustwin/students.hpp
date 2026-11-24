@@ -1,5 +1,6 @@
 #pragma once
 #include "campustwin/contracts.hpp"
+#include <map>
 #include <unordered_map>
 
 namespace campustwin {
@@ -7,6 +8,10 @@ std::vector<StudentSpec> read_student_specs(const std::filesystem::path& file);
 // Returns a replacement; requires a nonempty schedule for every student.
 std::vector<StudentSpec> read_schedules(const std::filesystem::path& file,
                                       const std::vector<StudentSpec>& population);
+
+// Bundled students/<name>.csv has a matching schedules/<name>.csv.
+std::vector<StudentSpec> read_scheduled_students(const std::filesystem::path& students,
+    const std::optional<std::filesystem::path>& schedule = std::nullopt);
 
 class StudentEngine final : public IStudentEngine {
 public:
@@ -26,30 +31,31 @@ private:
     struct StudentRuntime {
         StudentSpec spec;
         FacilityId selected_facility;
-        LocationId canteen_location;
         SimTime service_minutes{0};
-        std::size_t window_count{0};
         StudentState state{StudentState::AtLocation};
         std::optional<LocationId> location;
         std::optional<MoveInfo> move;
-        bool returning{false};
         RequestId request_id;
-        std::optional<SimTime> arrived_at;
         std::optional<ServiceStarted> service;
-        std::optional<SimTime> eating_until;
         std::size_t activity_index{0};
         std::vector<ActivityRecord> records;
         std::optional<SimTime> activity_until;
         std::optional<SeatRequest> seat_request;
-        bool seat_enqueued{false};
         std::optional<LocationId> occupied_seat;
     };
 
     void require_initialized() const;
     StudentRuntime& find_student(const StudentId& id);
     void finish_activity(StudentRuntime& student, SimTime now);
-    void start_activity(StudentRuntime& student, SimTime now);
-    bool advance_schedule(StudentRuntime& student, SimTime now, const IRouteProvider& routes);
+    using FacilityStatuses = std::map<FacilityId, FacilityDecisionStatus>;
+    const LunchDecision& choose_canteen(const StudentRuntime&, SimTime, const IRouteProvider&,
+        const IFacilityAdvisor*, const FacilityStatuses&, std::vector<LunchDecision>&) const;
+    void start_due_activity(StudentRuntime&, SimTime, const IRouteProvider&, const IFacilityAdvisor*,
+        const FacilityStatuses&, std::vector<LunchDecision>&, std::vector<StudentArrival>&);
+    void advance_student(StudentRuntime&, SimTime, const IRouteProvider&, const IFacilityAdvisor*,
+        const FacilityStatuses&, std::vector<LunchDecision>&, std::vector<StudentArrival>&);
+    void request_seat(StudentRuntime&, SimTime, const RequestId&);
+    void arrive_for_lunch(StudentRuntime&, SimTime, std::vector<StudentArrival>&);
 
     // reset sorts by ID, so events and snapshots do not depend on CSV row order.
     std::vector<StudentRuntime> students_;

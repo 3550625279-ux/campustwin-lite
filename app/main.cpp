@@ -129,22 +129,19 @@ int run(const std::vector<std::string>& args) {
         std::cout << '\n';
         return 0;
     }
-    auto population = read_student_specs(population_file);
+    auto population = read_scheduled_students(population_file, schedule_file);
     if (policy) for (auto& student : population) student.lunch_policy = *policy;
-    if (schedule_file) population = read_schedules(*schedule_file, population);
     StudentEngine students;
     FacilityEngine facilities;
     SeatEngine seats;
-    const bool detailed = schedule_file.has_value() || !environment.scenario().seat_pools.empty();
-    CsvRunWriter writer(output, detailed);
+    CsvRunWriter writer(output, true);
     try {
         SimulationRunner{}.run(settings, environment, population, students, facilities, writer, &seats);
     } catch (const std::exception& error) {
         throw std::runtime_error(std::string("run failed; any output may be incomplete: ") + error.what());
     }
     std::cout << "Simulation complete: " << population.size() << " students, "
-              << settings.duration_minutes << " minutes; " << (detailed ? "eight" : "five")
-              << " CSV files written to " << output.u8string() << '\n';
+              << settings.duration_minutes << " minutes; eight CSV files written to " << output.u8string() << '\n';
     return 0;
 }
 }  // namespace

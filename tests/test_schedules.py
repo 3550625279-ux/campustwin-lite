@@ -139,9 +139,8 @@ with tempfile.TemporaryDirectory(prefix="campustwin_schedule_") as temp:
     write(schedule, header + body)
     write(scene / "seats.csv", "location_id,capacity\nF,1\n")
     run(scene, people, schedule, base / "missing_pool", error="configured seat pool")
-    # Legacy meal-and-return flow can use seats without any schedule.
-    run(scene, people, None, base / "legacy_seats")
-    audit(base / "legacy_seats", 30, 2)
+    # A custom population requires an explicit schedule.
+    run(scene, people, None, base / "missing_schedule", error="missing activity schedule")
     write(scene / "seats.csv", "location_id,capacity\nF,0\n")
     run(scene, people, None, base / "zero_seats", error="must be positive")
     # No artificial one-minute movement for an activity at the current location.

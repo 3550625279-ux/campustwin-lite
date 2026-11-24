@@ -16,7 +16,7 @@
 | 食堂 | F_NEAR：2 个窗口；F_FAR：4 个窗口；每次服务均为 2 分钟 |
 | 学生 | 两个食堂各 20 人；每人速度 60 米/分钟，就餐 5 分钟，之后去宿舍 |
 | 成对出发 | 每个食堂各 12 人从 L_T1 于 t=0 出发，各 4 人从 L_T2 于 t=1 出发，各 4 人从 L_DORM 于 t=2 出发 |
-| 路线 | L_T1→近食堂 120 米；L_T1→图书馆→远食堂 240 米；其余路线在生成的报告中列出 |
+| 路线 | L_T1→近食堂 120 米；L_T1→图书馆→远食堂 240 米；其余路线在 routes.csv 中列出 |
 
 三个默认实验：
 
@@ -48,7 +48,6 @@ Windows PowerShell，Visual Studio 生成器：
 
 ```powershell
 py -3 tools/run_lunch_experiments.py --executable .\build\Debug\campustwin.exe --output .\outputs\lunch_demo
-Start-Process .\outputs\lunch_demo\report.html
 ```
 
 如果使用 Ninja/MinGW，程序通常在 `.\build\campustwin.exe`。所有相对路径以上述命令的当前目录为准。输出目录必须是**尚不存在**的目录；失败时该目录可能包含不完整结果，应换新目录重新运行。
@@ -81,7 +80,6 @@ python3 tools/run_lunch_experiments.py --executable build/campustwin --output ou
 
 | 文件 | 内容 |
 | --- | --- |
-| `report.html` | 可直接用浏览器打开的表格和队列曲线，不需要联网 |
 | `comparison.csv` | 每组、每个食堂的汇总，可导入 Excel |
 | `student_journeys.csv` | 每个学生的起点、指定食堂、路径、距离、到达、等待和开始吃饭时间 |
 | `routes.csv` | 每个起点到对应食堂的实际最短路径和距离 |

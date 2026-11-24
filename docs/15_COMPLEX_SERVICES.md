@@ -15,7 +15,6 @@ Windows PowerShell，Ninja/MinGW 单配置示例：
 
 ```powershell
 py -3 tools/run_service_experiments.py --executable .\build\campustwin.exe --output .\outputs\service_demo
-Start-Process .\outputs\service_demo\report.html
 ```
 
 Visual Studio 生成器通常使用 `.\build\Debug\campustwin.exe`。Python 3.9+ 只需要标准库。输出目录必须尚不存在；失败后请换目录重跑。
@@ -72,7 +71,7 @@ S002,L_T2,,L_DORM_S,0,60,5,fastest,noodle
 - `dedicated`：每个食堂的 3 个窗口分别只服务米饭、面食、现炒。
 - `flexible`：每个窗口都服务三种餐品，各餐品仍分别耗时 2、3、5 分钟。
 
-两组唯一改变的是窗口可提供的餐品集合。通用窗口模型假设切换餐品没有额外成本，这不一定符合真实食堂。脚本将输入副本、原始五份 CSV、HTML 报告、`summary.csv`、`meal_comparison.csv`、`window_comparison.csv` 和 `student_services.csv` 写入新输出目录。逐人服务表中的预计结束时刻由实际窗口、餐品和配置计算，并与实际完成事件交叉验证；窗口忙碌时间在观察截止处截断。
+两组唯一改变的是窗口可提供的餐品集合。通用窗口模型假设切换餐品没有额外成本，这不一定符合真实食堂。脚本将输入副本、原始八份 CSV、`summary.csv`、`meal_comparison.csv`、`window_comparison.csv` 和 `student_services.csv` 写入新输出目录。逐人服务表中的预计结束时刻由实际窗口、餐品和配置计算，并与实际完成事件交叉验证；窗口忙碌时间在观察截止处截断。
 
 默认 60 分钟、确定性输入的结果：
 

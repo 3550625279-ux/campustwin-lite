@@ -2,11 +2,10 @@
 """Run reproducible lunch experiments against the real CampusTwin executable.
 
 Only Python's standard library is required. The copied inputs, original output
-and derived reports are kept together so that every number can be audited.
+and derived CSV statistics are kept together so that every number can be audited.
 """
 import argparse
 import csv
-import html
 import io
 import math
 from pathlib import Path
@@ -16,8 +15,6 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 CASES = ("baseline", "more_windows", "faster_walk")
-CASE_LABELS = {"baseline": "基准", "more_windows": "增加窗口", "faster_walk": "加快步行"}
-COLORS = ("#1565c0", "#d1495b", "#138a72", "#8a5fb4")
 
 
 def read_csv(path):
@@ -154,94 +151,6 @@ def summarize(case, output, journeys):
     return summaries
 
 
-def display(value, digits=2):
-    if value == "" or value is None:
-        return "—"
-    if isinstance(value, float):
-        return f"{value:.{digits}f}"
-    return html.escape(str(value))
-
-
-def table(headers, rows):
-    heading = "".join(f"<th>{html.escape(str(h))}</th>" for h in headers)
-    body = "".join("<tr>" + "".join(f"<td>{display(v)}</td>" for v in row) + "</tr>" for row in rows)
-    return f"<div class='table-wrap'><table><thead><tr>{heading}</tr></thead><tbody>{body}</tbody></table></div>"
-
-
-def queue_chart(snapshots, title, duration):
-    groups = {}
-    for row in snapshots:
-        groups.setdefault(row["facility_id"], []).append((int(row["at"]), int(row["queue_length"])))
-    ymax = max([1] + [n for points in groups.values() for _, n in points])
-    lines, legend = [], []
-    for i, (facility, points) in enumerate(sorted(groups.items())):
-        color = COLORS[i % len(COLORS)]
-        coords = " ".join(f"{50 + at / duration * 610:.2f},{190 - val / ymax * 150:.2f}" for at, val in points)
-        lines.append(f"<polyline points='{coords}' fill='none' stroke='{color}' stroke-width='2.5'/>")
-        legend.append(f"<span><i style='background:{color}'></i>{html.escape(facility)}</span>")
-    return (f"<section class='chart'><h3>{html.escape(title)}</h3>"
-            f"<svg viewBox='0 0 690 230' role='img' aria-label='{html.escape(title)}的队列变化图'>"
-            f"<path d='M50 40 V190 H660' stroke='#9daeba' fill='none'/>"
-            f"<text x='14' y='45'>{ymax}</text><text x='29' y='194'>0</text>"
-            f"<text x='50' y='213'>0 分钟</text><text x='610' y='213'>{duration} 分钟</text>"
-            + "".join(lines) + "</svg><div class='legend'>" + "".join(legend) + "</div></section>")
-
-
-def group_comparison(journeys):
-    groups = {}
-    for person in journeys:
-        key = (person["origin"], person["departure_minute"], person["walk_m_per_min"], person["facility_id"])
-        groups.setdefault(key, []).append(person)
-    rows = []
-    for (origin, departure, speed, facility), people in sorted(groups.items()):
-        completed = [int(p["departure_to_eating_minutes"]) for p in people if p["departure_to_eating_minutes"] != ""]
-        rows.append((origin, departure, speed, facility, len(people), len(completed), mean(completed)))
-    return rows
-
-
-def make_report(output, summaries, journeys, routes, duration, target, window_count, speed_multiplier):
-    summary_rows = []
-    for row in summaries:
-        summary_rows.append((CASE_LABELS[row["experiment"]], row["facility_id"], row["window_count"],
-                             row["assigned"], row["arrived"], row["completed"], row["not_arrived"],
-                             row["waiting"], row["in_service"], row["not_completed"],
-                             row["max_queue_length"],
-                             float(row["mean_wait_minutes_started"]) if row["mean_wait_minutes_started"] else None,
-                             float(row["mean_departure_to_eating_minutes_completed"]) if row["mean_departure_to_eating_minutes_completed"] else None,
-                             f"{float(row['utilization']) * 100:.1f}%"))
-    route_rows = [(origin, facility, route["to"], float(route["distance_m"]), route["path"].replace("|", " → "))
-                  for (origin, facility), route in sorted(routes.items())]
-    charts = "".join(queue_chart(read_csv(output / "runs" / case / "output" / "facility_snapshots.csv"),
-                                 CASE_LABELS[case], duration) for case in CASES)
-    baseline = [r for r in journeys if r["experiment"] == "baseline"]
-    report = f"""<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>校园午餐仿真对照报告</title><style>
-:root{{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#203340;background:#f4f7f8;line-height:1.6}}
-body{{max-width:1180px;margin:auto;padding:28px}}h1,h2,h3{{line-height:1.25}}h1{{font-size:2rem}}h2{{margin-top:2rem}}
-.intro,.notice,.chart{{background:white;border-radius:12px;padding:18px 22px;box-shadow:0 3px 15px #1933420c}}
-.notice{{border-left:4px solid #d88138}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:14px}}
-.table-wrap{{overflow-x:auto;background:white;border-radius:10px}}table{{border-collapse:collapse;width:100%;font-size:.9rem}}
-th,td{{padding:10px 12px;text-align:left;border-bottom:1px solid #e6edef;white-space:nowrap}}th{{color:#476176;background:#edf3f5}}
-svg{{width:100%;height:auto}}svg text{{font-size:11px;fill:#536b78}}.legend{{display:flex;gap:18px;flex-wrap:wrap;font-size:.85rem}}
-i{{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px}}code{{background:#edf3f5;padding:2px 5px}}a{{color:#1565c0}}
-</style></head><body>
-<h1>校园午餐出行与服务仿真</h1>
-<p class="intro">三组实验使用同一份学生和校园配置。增加窗口组只改变 <code>{html.escape(target)}</code> 的窗口数为 {window_count}；加快步行组只把每人的速度乘以 {speed_multiplier:g}。观察区间为 [0, {duration}] 分钟。</p>
-<h2>食堂结果</h2>
-{table(['实验','食堂','窗口','指定人数','已到达','已完成服务','未到达','仍排队','服务中','未完成服务','最大队列','平均等待 / 分','出发到开始吃饭 / 分','窗口利用率'], summary_rows)}
-<p class="notice">未完成服务人数包括尚未到达、正在排队和服务中的人。平均等待只计算已开始服务的人；出发到开始吃饭只计算已完成服务的人。截止时仍未到达、排队或服务中的人不计入相应平均值，因此截断较早时不能直接比较这些平均数。窗口利用率以整个观察区间计算。最大队列在当分钟窗口分配后测量。</p>
-<h2>路线与距离</h2><p>使用校园环境模块实际计算的最短距离路径；路径中的箭头只表示路线，当前移动模型按整段总距离计算时间。</p>
-{table(['起点','食堂','食堂地点','距离 / 米','路线'], route_rows)}
-<h2>控制出发条件后的比较（基准）</h2><p>以下按起点、出发时间和速度分组：同组中不同食堂的学生具有相同出行条件。人数为指定人数，平均值只包含已开始吃饭的学生。</p>
-{table(['起点','出发 / 分','速度 / 米每分','食堂','人数','已开始吃饭','出发到开始吃饭 / 分'], group_comparison(baseline))}
-<h2>队列随时间变化</h2><p>每分钟的队列快照，记录当分钟可用窗口完成分配之后的人数。</p><div class="grid">{charts}</div>
-<h2>核对与复现</h2><p><a href="comparison.csv">食堂对比 CSV</a> · <a href="student_journeys.csv">逐人行程 CSV</a> · <a href="routes.csv">路线 CSV</a></p>
-<p>每组的 <code>runs/组名/input/</code> 保存实际输入，<code>runs/组名/output/</code> 保存程序的五份原始输出。地点与人口均为合成数据；食堂由输入预先指定，并非动态选择。速度对照只是速度变化，不模拟自行车和道路通行规则。</p>
-</body></html>"""
-    (output / "report.html").write_text(report, encoding="utf-8")
-
-
 def run(args):
     executable = args.executable.resolve()
     scenario, students = args.scenario.resolve(), args.students.resolve()
@@ -277,7 +186,9 @@ def run(args):
                                                     args.target_facility, args.window_count,
                                                     args.speed_multiplier)
         raw_output = destination / "output"
-        call([executable, "--scenario", case_scenario, "--students", case_students,
+        schedule = case_students.with_name('schedule.csv')
+        shutil.copyfile(args.schedule or students.parent.parent / 'schedules' / students.name, schedule)
+        call([executable, "--schedule", schedule, "--scenario", case_scenario, "--students", case_students,
               "--duration", args.duration, "--policy", "fixed", "--output", raw_output])
         case_journeys = derive_journeys(case, read_csv(case_students), raw_output, routes, args.duration)
         journeys.extend(case_journeys)
@@ -295,9 +206,6 @@ def run(args):
     write_csv(output / "comparison.csv", summaries, comparison_fields)
     write_csv(output / "student_journeys.csv", journeys, journey_fields)
     write_csv(output / "routes.csv", route_rows, ["origin", "facility_id", "destination", "distance_m", "path"])
-    make_report(output, summaries, journeys, routes, args.duration, args.target_facility,
-                args.window_count, args.speed_multiplier)
-    print(f"Experiments complete. Open {output / 'report.html'}")
     for row in summaries:
         print(f"{row['experiment']}: {row['facility_id']} arrived={row['arrived']} completed={row['completed']} "
               f"waiting={row['waiting']} mean_wait={row['mean_wait_minutes_started'] or 'N/A'}")
@@ -305,6 +213,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--schedule", type=Path, help="Activity schedule paired with the student file")
     parser.add_argument("--executable", type=Path, required=True, help="path to the built campustwin executable")
     parser.add_argument("--scenario", type=Path, default=ROOT / "data/scenarios/two_canteens")
     parser.add_argument("--students", type=Path, default=ROOT / "data/students/two_canteens.csv")

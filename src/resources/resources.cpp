@@ -47,6 +47,7 @@ struct FrozenFacility {
     std::deque<StudentArrival> queue;
     std::vector<SimTime> available_at;
     mutable std::optional<std::int64_t> next_available_after_queue;
+    mutable std::map<std::pair<SimTime, std::string>, ServiceEstimate> forecasts;
 };
 
 // Match waiting requests in FIFO order to available, compatible windows.
@@ -93,6 +94,46 @@ std::vector<std::optional<std::size_t>> assign_windows(
     return assigned;
 }
 
+// With exactly one dish per window, each dish has an independent FIFO.
+std::optional<ServiceEstimate> estimate_dedicated_service(
+        const FrozenFacility& facility, SimTime arrival_at, const std::string& meal) {
+    const auto& services = facility.config.window_services;
+    if (services.size() != facility.config.window_count) return std::nullopt;
+    struct Window {
+        std::size_t id;
+        std::int64_t available_at;
+        SimTime duration;
+    };
+    std::vector<Window> windows;
+    for (const auto& service : services) {
+        if (service.meal_type == "*") return std::nullopt;
+        if (service.meal_type == meal)
+            windows.push_back({service.window_id, facility.available_at[service.window_id],
+                               service.service_minutes});
+    }
+    if (windows.empty()) return std::nullopt;
+
+    auto now = static_cast<std::int64_t>(facility.status.observed_at) + 1;
+    const auto next_window = [&] {
+        return std::min_element(windows.begin(), windows.end(), [&](const Window& left, const Window& right) {
+            return std::make_pair(std::max(now, left.available_at), left.id) <
+                   std::make_pair(std::max(now, right.available_at), right.id);
+        });
+    };
+
+    for (const auto& request : facility.queue) {
+        if (request.meal_type != meal) continue;
+        auto window = next_window();
+        now = std::max(now, window->available_at);
+        if (now > std::numeric_limits<std::int64_t>::max() - window->duration)
+            throw ValidationError("C: forecast time overflow");
+        window->available_at = now + window->duration;
+    }
+    now = std::max(now, static_cast<std::int64_t>(arrival_at));
+    const auto window = next_window();
+    return ServiceEstimate{std::max(now, window->available_at) - arrival_at, window->duration};
+}
+
 class FrozenAdvisor final : public IFacilityAdvisor {
 public:
     explicit FrozenAdvisor(std::map<FacilityId, FrozenFacility> entries)
@@ -120,6 +161,12 @@ public:
             throw ValidationError("C: forecast arrival precedes snapshot");
         if (!facility_serves(facility.config, meal)) return std::nullopt;
         if (!facility.config.window_services.empty()) {
+            const auto key = std::make_pair(arrival_at, meal);
+            const auto cached = facility.forecasts.find(key);
+            if (cached != facility.forecasts.end()) return cached->second;
+            if (const auto estimate = estimate_dedicated_service(facility, arrival_at, meal)) {
+                return facility.forecasts.emplace(key, *estimate).first->second;
+            }
             auto queue = facility.queue;
             std::vector<std::int64_t> available(facility.available_at.begin(), facility.available_at.end());
             std::int64_t now = std::max<std::int64_t>(0, static_cast<std::int64_t>(facility.status.observed_at) + 1);
@@ -137,7 +184,9 @@ public:
                     if (!assignments[w]) continue;
                     const auto q = *assignments[w];
                     const auto duration = *window_service_time(facility.config, w, queue[q].meal_type);
-                    if (queue[q].request_id == "forecast") return ServiceEstimate{now - arrival_at, duration};
+                    if (queue[q].request_id == "forecast") {
+                        return facility.forecasts.emplace(key, ServiceEstimate{now - arrival_at, duration}).first->second;
+                    }
                     if (now > std::numeric_limits<std::int64_t>::max() - duration)
                         throw ValidationError("C: forecast time overflow");
                     available[w] = now + duration;

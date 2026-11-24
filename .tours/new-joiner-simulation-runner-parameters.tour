@@ -1,0 +1,86 @@
+{
+  "$schema": "https://aka.ms/codetour-schema",
+  "title": "SimulationRunner 参数与协作链路 — 新成员导览",
+  "description": "从 run() 的七个参数出发，理解输入数据、五个模块接口、主程序中的具体实现，以及每分钟的调用顺序。",
+  "ref": "main",
+  "steps": [
+    {
+      "file": "include/campustwin/simulation.hpp",
+      "line": 7,
+      "title": "入口签名：七个依赖全部由调用者注入",
+      "description": "run() 接收两个只读值对象、四个可变接口对象和一个可空座位接口指针。引用和指针均不转移所有权；末尾的 const 表示 SimulationRunner 自身不会在运行中保存或修改成员状态。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 124,
+      "title": "settings：唯一配置项是截止分钟",
+      "description": "SimulationSettings 目前只有 duration_minutes。循环会处理 0 到 duration_minutes，包含两端，因此 duration=120 会产生 121 个阶段末快照。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 111,
+      "title": "population：学生静态输入的集合",
+      "description": "每个 StudentSpec 包含身份、初始地点、午餐目标、步速、用餐时长、策略、餐品和可选活动日程。run() 只读该 vector，并把它交给学生引擎初始化及跨模块一致性校验。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 270,
+      "title": "environment：场景仓库兼路线提供者",
+      "description": "ICampusEnvironment 继承 IRouteProvider。由于 run() 接收 const 引用，调度期间只能读取 scenario、查询路线或调用其他 const 方法，不能加载、替换场景。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 294,
+      "title": "students：学生状态机接口",
+      "description": "IStudentEngine 拥有学生运行状态：reset 建立状态，tick 推进并产生到达事件，服务和座位回调同步外部资源结果，快照、决策和活动记录供校验与输出。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 318,
+      "title": "facilities：窗口队列与服务状态接口",
+      "description": "IFacilityEngine 负责冻结决策视图、完成到期服务、入队、分配窗口、快照和汇总。调度器只规定调用顺序，不复制其排队算法。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 331,
+      "title": "writer：输出端口而非固定 CSV 类型",
+      "description": "IRunWriter 接收运行开始、逐分钟事件/快照、决策、座位记录、活动记录和最终汇总。部分扩展方法有默认空实现，所以旧写入器仍可在无对应输出需求时工作。"
+    },
+    {
+      "file": "include/campustwin/contracts.hpp",
+      "line": 356,
+      "title": "seats：可选的有限座位资源接口",
+      "description": "ISeatEngine* 默认可为 nullptr，这正是使用指针而非引用的原因。有 seat_pools 的场景必须传入实现；否则 run() 会在初始化阶段明确报错。"
+    },
+    {
+      "file": "app/main.cpp",
+      "line": 132,
+      "title": "主程序把接口绑定到五个具体实现",
+      "description": "批处理入口创建 CampusEnvironment、StudentEngine、FacilityEngine、SeatEngine 和 CsvRunWriter，再以基类引用/指针交给 run()。对象仍由 main 的栈作用域拥有。"
+    },
+    {
+      "file": "src/simulation/simulation.cpp",
+      "line": 109,
+      "title": "初始化：读取场景并重置所有有状态模块",
+      "description": "Runner 从 environment 取得只读场景，然后重置学生、设施和可选座位引擎，最后启动 writer。重复使用同一引擎对象时，reset 必须清掉上一轮状态。"
+    },
+    {
+      "file": "src/simulation/simulation.cpp",
+      "line": 116,
+      "title": "核心时钟：每分钟按固定阶段协作",
+      "description": "每轮先冻结设施视图，再完成服务、推进学生、入队并开窗、分配座位、读取快照、交叉校验并写出。阶段顺序是接口契约的一部分，不能任意交换。"
+    },
+    {
+      "file": "src/simulation/simulation.cpp",
+      "line": 136,
+      "title": "边界守恒：学生视图必须和资源视图一致",
+      "description": "调度器对学生、窗口和座位快照做跨模块计数校验；异常状态在写本分钟记录前被拒绝。截止分钟仍完整执行一轮，然后写活动记录及设施汇总。"
+    },
+    {
+      "file": "tests/simulation_tests.cpp",
+      "line": 71,
+      "title": "测试替身证明接口顺序和截止语义",
+      "description": "该测试用最小接口实现记录调用日志，验证 duration=1 会执行 t=0、t=1 两轮，并验证不一致快照不会被继续写入或标记完成。可从这里学习如何为 run() 注入自己的实现。"
+    }
+  ]
+}

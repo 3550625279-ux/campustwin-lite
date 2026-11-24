@@ -66,6 +66,8 @@ def check(output):
         elif t < end + 7:
             state, location = "Moving", ""
             movement = ("L_CANTEEN", "L_DORM", end + 5, end + 7, 120)
+        elif t == end + 7:
+            state, location, movement = "InActivity", "L_DORM", None
         else:
             state, location, movement = "Finished", "L_DORM", None
         require(row["state"] == state and row["location_id"] == location, f"state/location mismatch: t={t} {student}")

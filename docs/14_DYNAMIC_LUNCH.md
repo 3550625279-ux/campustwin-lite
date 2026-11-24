@@ -21,7 +21,6 @@ Windows PowerShell，Ninja/MinGW 单配置示例：
 
 ```powershell
 py -3 tools/run_dynamic_experiments.py --executable .\build\campustwin.exe --output .\outputs\dynamic_demo
-Start-Process .\outputs\dynamic_demo\report.html
 ```
 
 Visual Studio 生成器通常使用 `.\build\Debug\campustwin.exe`。脚本只需 Python 3.9+ 标准库；`--output` 必须指向尚不存在的新目录。失败后可能有不完整输出，请换目录重跑。
@@ -81,7 +80,6 @@ C 的估计会考虑**快照中已有队列、每个窗口的预计释放时刻�
 
 | 汇总输出 | 内容 |
 | --- | --- |
-| `report.html` | 离线策略和食堂对照表、逐分钟队列曲线、逐人样例 |
 | `policy_summary.csv` | 各策略人数、完成数、未完成数、平均等待、预测误差 |
 | `facility_comparison.csv` | 各食堂选择人数、到达与完成数、队列、等待和利用率 |
 | `student_journeys.csv` | 每人的选择、预计和实际开始吃饭时间及误差 |

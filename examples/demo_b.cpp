@@ -58,6 +58,7 @@ namespace {
 int run(const std::vector<std::string>& args) {
     try {
         std::filesystem::path file = "data/students/mvp.csv";
+        std::optional<std::filesystem::path> schedule;
         std::string selected = "S001";
         bool all = false, student_given = false;
         SimTime duration = 20, wait = 0;
@@ -65,7 +66,7 @@ int run(const std::vector<std::string>& args) {
             const std::string option = args[i];
             if (option == "--help") {
                 std::cout << "B-only demo: fixed MVP routes and independently scripted services.\n"
-                          << "demo_b [--students FILE] [--student ID | --all] [--wait MINUTES] [--duration MINUTES]\n"
+                          << "demo_b [--students FILE] [--schedule FILE] [--student ID | --all] [--wait MINUTES] [--duration MINUTES]\n"
                           << "Defaults: data/students/mvp.csv, S001, wait=0, duration=20.\n"
                           << "A/C production modules and CSV reporting are not used by this demo.\n";
                 return 0;
@@ -74,6 +75,7 @@ int run(const std::vector<std::string>& args) {
             if (i + 1 == args.size()) throw ValidationError("missing value for " + option);
             const std::string value = args[++i];
             if (option == "--students") file = std::filesystem::u8path(value);
+            else if (option == "--schedule") schedule = std::filesystem::u8path(value);
             else if (option == "--student") { selected = value; student_given = true; }
             else if (option == "--wait") wait = number(value, 0);
             else if (option == "--duration") duration = number(value, 1);
@@ -81,7 +83,7 @@ int run(const std::vector<std::string>& args) {
         }
 
         if (all && student_given) throw ValidationError("use either --all or --student, not both");
-        const auto population = campustwin::read_student_specs(file);
+        const auto population = campustwin::read_scheduled_students(file, schedule);
         std::vector<StudentSpec> chosen;
         if (all) chosen = population;
         else {

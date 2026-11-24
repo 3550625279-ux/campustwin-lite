@@ -1,5 +1,6 @@
-# Experiment tools
+# 数据与回归工具
 
-一键运行所有阶段：`python3 tools/run_all_stages.py --executable build/campustwin --output outputs/all_stages`。单独运行日程/座位/地图对照：`python3 tools/run_schedule_experiments.py --executable build/campustwin --output outputs/schedules`。Windows 使用 `py -3` 和实际 `.exe` 路径；输出目录必须不存在。详见 [第三阶段指南](../docs/16_ACTIVITY_SCHEDULES.md)。
+交互式展示通过 [CampusTwin Lite 工作台](../README.md#展示版) 运行。
 
-Run `run_dynamic_experiments.py` to compare fixed, nearest, and queue-aware decisions; see [the dynamic lunch guide](../docs/14_DYNAMIC_LUNCH.md). Run `run_lunch_experiments.py` for the fixed-destination window and speed experiment; see [its guide](../docs/13_LUNCH_EXPERIMENTS.md).
+- `generate_flagship.py` 按固定种子重新生成旗舰场景、学生和日程 CSV。
+- `run_*_experiments.py` 和 `run_all_stages.py` 供集成回归使用，执行 C++ 程序并保留对照 CSV。统一通过 `ctest` 运行，见 [测试说明](../tests/README.md)。

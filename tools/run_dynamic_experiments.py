@@ -6,11 +6,10 @@ from pathlib import Path
 import shutil
 import sys
 
-from run_lunch_experiments import call, mean, number, queue_chart, read_csv, table, write_csv
+from run_lunch_experiments import call, mean, number, read_csv, write_csv
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICIES = ('fixed', 'nearest', 'fastest')
-LABELS = {'fixed': '预先指定', 'nearest': '最近食堂', 'fastest': '预计最快'}
 
 
 def make_journeys(policy, population, output, duration):
@@ -102,45 +101,6 @@ def summarize(policy, journeys, output):
     return overall, facilities
 
 
-def render_report(output, overall, facilities, journeys, duration):
-    overall_rows = [(LABELS[x['policy']], x['students'], x['decided'], x['arrived'], x['completed'],
-                     x['not_completed'], x['max_total_queue'], x['mean_wait_started'] or '—',
-                     x['mean_to_eating_completed'] or '—', x['mean_prediction_error_completed'] or '—')
-                    for x in overall]
-    facility_rows = [(LABELS[x['policy']], x['facility_id'], x['window_count'], x['chosen'], x['arrived'],
-                      x['completed'], x['not_completed'], x['waiting'], x['max_queue_length'],
-                      x['mean_wait_started'] or '—', x['mean_to_eating_completed'] or '—') for x in facilities]
-    example_rows = [(LABELS[x['policy']], x['student_id'], x['origin'], x['chosen_facility'] or '—',
-                     x['distance_m'] or '—', x['estimated_wait_minutes'] or '—',
-                     x['estimated_to_eating_minutes'] or '—', x['actual_to_eating_minutes'] or '—',
-                     x['final_state']) for x in journeys[:30]]
-    charts = ''.join(queue_chart(read_csv(output / 'runs' / p / 'output' / 'facility_snapshots.csv'),
-                                 LABELS[p], duration) for p in POLICIES)
-    report = f'''<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>动态午餐策略对照</title><style>
-:root{{font-family:system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#203340;background:#f4f7f8;line-height:1.6}}
-body{{max-width:1180px;margin:auto;padding:28px}}h1,h2,h3{{line-height:1.25}}h2{{margin-top:2rem}}
-.intro,.notice,.chart{{background:white;border-radius:12px;padding:18px 22px;box-shadow:0 3px 15px #1933420c}}
-.notice{{border-left:4px solid #d88138}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(310px,1fr));gap:14px}}
-.table-wrap{{overflow-x:auto;background:white;border-radius:10px}}table{{border-collapse:collapse;width:100%;font-size:.9rem}}
-th,td{{padding:10px 12px;text-align:left;border-bottom:1px solid #e6edef;white-space:nowrap}}th{{color:#476176;background:#edf3f5}}
-svg{{width:100%;height:auto}}svg text{{font-size:11px;fill:#536b78}}.legend{{display:flex;gap:18px;flex-wrap:wrap;font-size:.85rem}}
-i{{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px}}code{{background:#edf3f5;padding:2px 5px}}
-</style></head><body><h1>校园午餐：动态选择食堂</h1>
-<p class="intro">三组使用同一校园、学生、出发时刻和窗口配置，只改变选择策略。仿真观察时长 {duration} 分钟；输入是合成数据。</p>
-<p class="notice">预计等待只使用出发前一刻的队列和窗口快照，假定之后没有新增到达。它忽略在途学生以及其他同时决策者，因此预计值不是保证值；误差 = 实际出发到开始吃饭 − 预计时间。</p>
-<h2>策略对照</h2>{table(['策略','总人数','已选择','已到达','已开始吃饭','未完成服务','总队列峰值','平均等待/分','出发到吃饭/分','平均预测误差/分'], overall_rows)}
-<p>平均等待只统计已开始窗口服务的人；出发到吃饭和预测误差只统计已完成窗口服务的人。未完成包括未出发、在路上、排队和服务中，提前截断时不能只比较均值。</p>
-<h2>各食堂</h2>{table(['策略','食堂','窗口','选择人数','已到达','已完成','尚未完成','仍排队','峰值队列','平均等待/分','出发到吃饭/分'], facility_rows)}
-<h2>队列变化</h2><div class="grid">{charts}</div>
-<h2>逐人样例</h2><p>展示前 30 行；完整数据以及每个候选食堂的评分见 CSV。</p>
-{table(['策略','学生','起点','所选食堂','距离/米','预计等待/分','预计总耗时/分','实际总耗时/分','最终状态'], example_rows)}
-<h2>复现与核对</h2><p><a href="policy_summary.csv">策略汇总</a> · <a href="facility_comparison.csv">食堂对照</a> · <a href="student_journeys.csv">逐人行程</a> · <a href="candidate_decisions.csv">全部候选决策</a></p>
-<p>每组 <code>runs/策略/input/</code> 保存真实输入；<code>output/</code> 保存原始事件、状态、汇总和决策 CSV。所有同分钟出发的学生共享同一份前一时刻快照；到达前不改目标。</p></body></html>'''
-    (output / 'report.html').write_text(report, encoding='utf-8')
-
-
 def run(args):
     executable, scenario, students, output = (p.resolve() for p in
                                                (args.executable, args.scenario, args.students, args.output))
@@ -170,7 +130,9 @@ def run(args):
         input_students = base / 'input' / 'students.csv'
         shutil.copyfile(students, input_students)
         raw = base / 'output'
-        call([executable, '--scenario', input_scenario, '--students', input_students, '--policy', policy,
+        schedule = input_students.with_name('schedule.csv')
+        shutil.copyfile(args.schedule or students.parent.parent / 'schedules' / students.name, schedule)
+        call([executable, "--schedule", schedule, '--scenario', input_scenario, '--students', input_students, '--policy', policy,
               '--duration', args.duration, '--output', raw])
         journeys, candidates = make_journeys(policy, population, raw, args.duration)
         one_overall, one_facilities = summarize(policy, journeys, raw)
@@ -185,8 +147,6 @@ def run(args):
                         'queue_length', 'distance_m', 'route_path', 'travel_minutes', 'estimated_wait_minutes',
                         'service_minutes', 'estimated_total_minutes', 'selected', 'reason']
     write_csv(output / 'candidate_decisions.csv', all_candidates, candidate_fields)
-    render_report(output, overall, facilities, all_journeys, args.duration)
-    print('Experiments complete. Open ' + str(output / 'report.html'))
     for item in overall:
         print(f"{item['policy']}: completed={item['completed']}/{item['students']} "
               f"mean_wait={item['mean_wait_started'] or 'N/A'} not_completed={item['not_completed']}")
@@ -194,6 +154,7 @@ def run(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--schedule", type=Path, help="Activity schedule paired with the student file")
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--scenario', type=Path, default=ROOT / 'data/scenarios/dynamic_campus')
     parser.add_argument('--students', type=Path, default=ROOT / 'data/students/dynamic_campus.csv')

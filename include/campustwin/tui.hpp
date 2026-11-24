@@ -12,30 +12,12 @@
 
 namespace campustwin {
 
-enum class UserRole { Guest, Student, Admin };
-
-const char* role_name(UserRole role);
-const char* role_label_zh(UserRole role);
-
-// Persists optional role bindings alongside AccountStore without altering accounts.db format.
-class RoleStore {
-public:
-    explicit RoleStore(std::filesystem::path file);
-    UserRole role_of(const std::string& username) const;
-    void set_role(const std::string& username, UserRole role);
-
-private:
-    std::filesystem::path file_;
-    std::map<std::string, UserRole> roles_;
-    void save() const;
-};
-
 struct TickFrame {
     SimTime at{0};
     std::vector<ServiceCompleted> completed;
     std::vector<StudentArrival> arrivals;
     std::vector<ServiceStarted> started;
-    std::vector<StudentSnapshot> students;
+    std::size_t finished_students{0};
     std::vector<FacilitySnapshot> facilities;
     std::vector<LunchDecision> decisions;
     std::vector<SeatRequest> seat_requests;
@@ -48,6 +30,10 @@ struct RecordedRun {
     CampusScenario scenario;
     std::vector<StudentSpec> population;
     std::vector<TickFrame> frames;
+    // Each trace stores the first snapshot and subsequent changes in minute order.
+    std::vector<std::vector<StudentSnapshot>> student_history;
+    std::vector<StudentSnapshot> students_at(SimTime tick) const;
+    std::optional<StudentSnapshot> student_at(const StudentId& id, SimTime tick) const;
     std::vector<ActivityRecord> activities;
     std::vector<FacilitySummary> summaries;
 
@@ -129,15 +115,8 @@ public:
     int run();
 
 private:
-    struct Preset {
-        std::string code;
-        std::string title;
-        std::string subtitle;
-        std::filesystem::path scenario_rel;
-        std::filesystem::path students_rel;
-        std::optional<std::filesystem::path> schedule_rel;
-        SimTime default_duration{120};
-    };
+    enum class PlaybackView { Overview, Scene, Students };
+    enum class LunchPlan { Concentrated, Staggered20, Staggered40 };
 
     WorkbenchOptions options_;
     std::istream& in_;
@@ -149,7 +128,9 @@ private:
     std::filesystem::path scenario_path_;
     std::filesystem::path students_path_;
     std::optional<std::filesystem::path> schedule_path_;
-    SimulationSettings settings_{160};
+    std::optional<LunchPlan> lunch_plan_;
+    SimulationSettings settings_{600};
+    int playback_speed_{1};
     std::optional<LunchPolicy> policy_override_;
     bool scenario_dirty_{false};
 
@@ -159,39 +140,46 @@ private:
 
     std::filesystem::path account_file_;
     AccountStore accounts_;
-    RoleStore roles_;
     std::string current_user_;
-    UserRole current_role_{UserRole::Guest};
 
-    std::vector<Preset> presets() const;
-    void load_preset(std::size_t index);
+    static const char* lunch_plan_name(LunchPlan plan);
+    static void apply_lunch_plan(std::vector<StudentSpec>& population, LunchPlan plan);
+    void load_flagship(LunchPlan plan);
+    bool choose_flagship();
     void reload_population();
-    RecordedRun execute_simulation(const CampusEnvironment& env,
-                                   std::vector<StudentSpec> pop,
-                                   SimTime duration,
-                                   const std::optional<std::filesystem::path>& csv_output = std::nullopt) const;
+    bool authenticate();
+    void load_initial_scenario();
+    bool run_session();
+    std::filesystem::path user_directory() const;
+    bool prompt_password(std::string& password);
+    RecordedRun load_or_simulate(const CampusEnvironment& env,
+                                 const std::vector<StudentSpec>& population, SimTime duration);
     void ensure_run_cached();
 
     std::string style(const char* ansi_code, const std::string& text) const;
     void print_banner() const;
     void print_status_card() const;
     void print_run_summary(const RecordedRun& run) const;
-    void render_tick_dashboard(const RecordedRun& run, SimTime tick, bool clear_frame = false) const;
+    void render_tick_dashboard(const RecordedRun& run, SimTime tick, PlaybackView view,
+                               const StudentId& selected_student) const;
+    void render_tick_overview(const RecordedRun& run, const TickFrame& frame,
+                              const std::vector<StudentSnapshot>& students) const;
+    void render_tick_details(const RecordedRun& run, const TickFrame& frame,
+                             const std::vector<StudentSnapshot>& students, PlaybackView view,
+                             const StudentId& selected_student) const;
+    std::vector<std::string> render_tick_event_summary(const RecordedRun& run, const TickFrame& frame,
+                                                      const std::vector<StudentSnapshot>& students,
+                                                      bool include_details) const;
 
     bool prompt_line(const std::string& label, std::string& line);
-    void menu_presets();
+    void menu_scenarios();
     void menu_simulation_playback();
     void menu_student_inspector();
-    void menu_experiments();
+    void menu_lunch_timing_experiment();
     void menu_map_and_routes();
     void menu_scenario_editor();
-    void menu_accounts();
-    void menu_export();
+    void show_lunch_timing_comparison();
 
-    void run_experiment_policies();
-    void run_experiment_heterogeneous_windows();
-    void run_experiment_schedule_bottlenecks();
-    void run_experiment_lunch_sensitivity();
 };
 
 }  // namespace campustwin

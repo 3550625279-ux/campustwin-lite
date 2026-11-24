@@ -119,7 +119,11 @@ void exhaustive_matching() {
 void forecast_matches_replay() {
     const char* meals[] = {"rice", "noodle", "stirfry"};
     for (int seed = 0; seed < 120; ++seed) {
-        const int masks[] = {1 + seed % 7, 1 + (seed * 3 + 1) % 7, 1 + (seed * 5 + 2) % 7};
+        // Exercise dedicated FIFO with two windows of different duration for one dish.
+        const bool dedicated = seed % 4 == 0;
+        const int masks[] = {dedicated ? 1 : 1 + seed % 7,
+                             dedicated ? 1 : 1 + (seed * 3 + 1) % 7,
+                             dedicated ? 2 : 1 + (seed * 5 + 2) % 7};
         const int supported = masks[0] | masks[1] | masks[2];
         FacilityConfig f{"F","C",3,2};
         for (int w = 0; w < 3; ++w) for (int m = 0; m < 3; ++m)
@@ -167,6 +171,7 @@ void student_uses_assigned_duration() {
                           {"D","Dorm",LocationKind::Dormitory,5}};
     scenario.facilities = {config()};
     StudentSpec spec{"S001","T","F","D",0,60,5,LunchPolicy::Fixed,"rice"};
+    spec.activities = {{"meal", ActivityKind::Lunch, "", 0, 5, false}};
     StudentEngine students; students.reset(scenario,{spec}); Routes routes;
     students.tick(0,routes);
     const auto arrived = students.tick(1,routes);

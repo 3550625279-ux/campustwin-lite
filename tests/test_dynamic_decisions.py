@@ -92,7 +92,6 @@ def main():
             if row['actual_to_eating_minutes']:
                 assert int(row['prediction_error_minutes']) == (int(row['actual_to_eating_minutes']) -
                                                                  int(row['estimated_to_eating_minutes']))
-        assert (output / 'report.html').is_file()
         before = (output / 'policy_summary.csv').read_bytes()
         run(command, success=False)
         assert (output / 'policy_summary.csv').read_bytes() == before, 'existing output overwritten'
@@ -116,13 +115,18 @@ def main():
             if policy != 'fixed': row['lunch_facility'] = ''
             values.append(row)
         write(mixed, fields, values)
+        schedule = tmp / 'mixed_schedule.csv'
+        selected_ids = {p['id'] for p in values}
+        schedule_rows = [r for r in read(root / 'data/schedules/dynamic_campus.csv')
+                         if r['student_id'] in selected_ids]
+        write(schedule, list(schedule_rows[0]), schedule_rows)
         mixed_out = tmp / 'mixed'
-        run([app, '--scenario', scenario, '--students', mixed, '--duration', '30', '--output', mixed_out])
+        run([app, '--scenario', scenario, '--students', mixed, '--schedule', schedule, '--duration', '30', '--output', mixed_out])
         selected = [x for x in read(mixed_out / 'decisions.csv') if x['selected'] == '1']
         assert {x['policy'] for x in selected} == {'fixed', 'nearest', 'fastest'}
         values[2]['lunch_policy'] = 'invalid'
         write(mixed, fields, values)
-        run([app, '--scenario', scenario, '--students', mixed, '--output', tmp / 'invalid'], success=False)
+        run([app, '--scenario', scenario, '--students', mixed, '--schedule', schedule, '--output', tmp / 'invalid'], success=False)
 
         # An unreachable candidate is recorded and skipped; no reachable candidate fails explicitly.
         disconnected = tmp / 'disconnected'

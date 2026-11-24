@@ -6,35 +6,11 @@ from pathlib import Path
 import shutil
 import sys
 
-from run_lunch_experiments import call, mean, number, queue_chart, read_csv, table, write_csv
+from run_lunch_experiments import call, mean, number, read_csv, write_csv
 
 ROOT = Path(__file__).resolve().parents[1]
 VARIANTS = ('dedicated', 'flexible')
-LABEL = {'dedicated': '专用窗口', 'flexible': '通用窗口'}
 MEALS = (('rice', 2), ('noodle', 3), ('stirfry', 5))
-
-
-def render_report(destination, totals, meals, windows, duration):
-    total_rows = [(LABEL[x['variant']], x['students'], x['completed'], x['unfinished'],
-                   x['started'], x['mean_wait_started'] or '—', x['max_total_queue']) for x in totals]
-    meal_rows = [(LABEL[x['variant']], x['meal_type'], x['demand'], x['started'], x['completed'],
-                  x['mean_wait_started'] or '—') for x in meals]
-    window_rows = [(LABEL[x['variant']], x['facility_id'], x['window_id'], x['started'], x['completed'],
-                    x['busy_minutes'], x['utilization']) for x in windows]
-    charts = ''.join(queue_chart(read_csv(destination / 'runs' / v / 'output' / 'facility_snapshots.csv'),
-                                 LABEL[v], duration) for v in VARIANTS)
-    html = f'''<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>食堂窗口分工实验</title>
-<style>body{{font:16px/1.6 system-ui,sans-serif;background:#f4f7f8;color:#203340;max-width:1180px;margin:auto;padding:25px}}h2{{margin-top:2em}}.table-wrap{{overflow:auto;background:white}}table{{border-collapse:collapse;width:100%}}td,th{{padding:9px;border-bottom:1px solid #ddd;text-align:left;white-space:nowrap}}th{{background:#e8f1f4}}.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:15px}}.chart{{background:white;padding:12px}}svg{{width:100%;height:auto}}</style></head><body>
-<h1>食堂窗口分工：专用与通用窗口</h1><p>相同校园、学生、出发时刻、预先指定的食堂、窗口数量和每种餐品耗时；只改变各窗口能提供哪些餐品。观察时长 {duration} 分钟，所有数据均为合成数据。</p>
-<p>专用：各食堂各有米饭、面食、现炒专用窗口各一个；通用：每个窗口都可提供三种餐品。每次服务分别耗时 2、3、5 分钟。单队列按到达顺序优先匹配合适窗口；可通过重新分配空闲窗口满足更多学生。</p>
-<h2>整体对照</h2>{table(['方案','学生','完成服务','未完成服务','已开始服务','平均等待/分','总队列峰值'],total_rows)}
-<p>平均等待仅含已开始服务者；未完成包含未出发、在途、排队和服务中的学生，请结合完成数阅读。通用窗口并不代表现实中转换餐品没有额外成本。</p>
-<h2>餐品需求与等待</h2>{table(['方案','餐品','需求人数','开始服务','完成服务','平均等待/分'],meal_rows)}
-<h2>各窗口负载</h2>{table(['方案','食堂','窗口','开始人数','完成人数','忙碌分钟','利用率'],window_rows)}
-<h2>队列变化</h2><div class="grid">{charts}</div>
-<p><a href="summary.csv">总体 CSV</a> · <a href="meal_comparison.csv">餐品 CSV</a> · <a href="window_comparison.csv">窗口 CSV</a> · <a href="student_services.csv">逐人 CSV</a></p>
-<p>每组 <code>runs/方案/input</code> 保存实际输入，<code>output</code> 保存原始仿真结果。预测假定快照后无新到达；本实验为隔离窗口分工的影响，使用预先指定食堂。</p></body></html>'''
-    (destination / 'report.html').write_text(html, encoding='utf-8')
 
 
 def analyze(variant, population, facilities, raw, duration):
@@ -138,21 +114,22 @@ def run(args):
         write_csv(input_scenario / 'window_services.csv', offerings,
                   ['facility_id','window_id','meal_type','service_minutes'])
         raw = base / 'output'
-        call([executable, '--scenario', input_scenario, '--students', base / 'input' / 'students.csv',
+        schedule = base / 'input' / 'schedule.csv'
+        shutil.copyfile(args.schedule or students.parent.parent / 'schedules' / students.name, schedule)
+        call([executable, "--schedule", schedule, '--scenario', input_scenario, '--students', base / 'input' / 'students.csv',
               '--policy', 'fixed', '--duration', args.duration, '--output', raw])
         total, meals, windows, people = analyze(variant, population, facilities, raw, args.duration)
         totals.append(total); all_meals.extend(meals); all_windows.extend(windows); all_people.extend(people)
     for filename, rows in (('summary.csv',totals),('meal_comparison.csv',all_meals),
                            ('window_comparison.csv',all_windows),('student_services.csv',all_people)):
         write_csv(output / filename, rows, list(rows[0]))
-    render_report(output, totals, all_meals, all_windows, args.duration)
-    print('Experiments complete. Open ' + str(output / 'report.html'))
     for item in totals:
         print(f"{item['variant']}: completed={item['completed']}/{item['students']} mean_wait={item['mean_wait_started']} max_queue={item['max_total_queue']}")
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--schedule", type=Path, help="Activity schedule paired with the student file")
     parser.add_argument('--executable', type=Path, required=True)
     parser.add_argument('--scenario', type=Path, default=ROOT/'data/scenarios/service_campus')
     parser.add_argument('--students', type=Path, default=ROOT/'data/students/service_campus.csv')

@@ -89,9 +89,6 @@ def main():
         assert sum(int(r["departure_to_eating_minutes"]) for r in near_t1) / 12 == 9
         assert sum(int(r["departure_to_eating_minutes"]) for r in far_t1) / 12 == 8
 
-        report = (output / "report.html").read_text(encoding="utf-8")
-        assert "控制出发条件后的比较" in report and report.count("<svg ") == 3
-        assert "截断较早时" in report and "指定" in report
         original = (output / "comparison.csv").read_bytes()
         command([*args, "--output", output], success=False)
         assert (output / "comparison.csv").read_bytes() == original
@@ -112,7 +109,6 @@ def main():
             assert row["mean_departure_to_eating_minutes_completed"] == ""
         quick_near = next(r for r in cutoff_rows if r["experiment"] == "faster_walk" and r["facility_id"] == "F_NEAR")
         assert (quick_near["arrived"], quick_near["not_arrived"], quick_near["waiting"], quick_near["in_service"], quick_near["not_completed"]) == ("12", "8", "10", "2", "20")
-        assert (cutoff / "report.html").exists()
         invalid = root_out / "invalid"
         command([*args, "--output", invalid, "--target-facility", "MISSING"], success=False)
         assert not invalid.exists()

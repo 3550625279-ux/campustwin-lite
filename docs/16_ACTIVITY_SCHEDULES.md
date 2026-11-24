@@ -6,19 +6,7 @@
 
 `data/scenarios/campus_day` 包含 16 个地点、38 条无向道路、3 个食堂、9 个异质窗口、6 组座位；36 名学生每人 6 项活动，共 216 项。地图、人数、餐品和日程均为合成数据。
 
-一次生成原 MVP 验收、双食堂实验以及三个阶段的报告：
-
-```bash
-python3 tools/run_all_stages.py --executable build/campustwin --output outputs/all_stages
-```
-
-单独生成日程对照：
-
-```bash
-python3 tools/run_schedule_experiments.py --executable build/campustwin --output outputs/schedules
-```
-
-Windows PowerShell（Ninja/MinGW）用 `py -3` 和 `.\build\campustwin.exe`；Visual Studio 生成器通常使用 `.\build\Debug\campustwin.exe`。打开对应输出目录的 `report.html`。所有报告离线可用，不需要服务器或网络；输出目录必须不存在。
+终端演示使用 [旗舰工作台](../README.md#展示版)。原始小场景与资源变量对照由 CTest 做数值回归。
 
 单次运行自定义日程：
 
@@ -48,7 +36,7 @@ L_LIBRARY_W,2
 
 ## B：日程输入与状态
 
-学生 CSV 继续兼容 7、8、9 列。新增独立 `--schedule FILE`，每位学生必须有日程：
+学生 CSV 继续兼容 7、8、9 列。每位学生必须有日程。内置学生文件自动读取同名日程，自定义路径使用 `--schedule FILE`：
 
 ```csv
 student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat
@@ -91,7 +79,7 @@ S001,5,home,rest,L_DORM_N,80,2,0
 
 ## 输出与复现
 
-旧五份输出保留原字段：`events.csv`、`student_snapshots.csv`、`facility_snapshots.csv`、`summary.csv`、`decisions.csv`。日程或有限座位模式增加：
+旧五份输出保留原字段：`events.csv`、`student_snapshots.csv`、`facility_snapshots.csv`、`summary.csv`、`decisions.csv`。每次日程仿真还会写入：
 
 | 文件 | 内容 |
 | --- | --- |
@@ -103,7 +91,7 @@ S001,5,home,rest,L_DORM_N,80,2,0
 
 `seat_snapshots.total_wait_minutes` 只累计已入座者的等待；`activities.seat_wait_minutes` 还计入截止时仍在等座者的已观察等待。座位利用率为 `[0,T)` 的忙碌座位分钟除以 `容量 × T`；恰好在 T 入座计入已入座人数，但贡献 0 分钟利用率。
 
-对照报告另外生成 `summary.csv`、`seat_comparison.csv` 和合并的 `activities.csv`，提供学生/方案切换、状态时间线、真实路径的拓扑示意和原始数据链接。拓扑图节点坐标仅用于排版，不是校园测量坐标。提前截止时，报告单列未完成学生、未开始课程，避免把尚未发生的等待当成改进。
+数值回归另外输出汇总、座位对照与合并活动 CSV。提前截止时，汇总单列未完成学生和未开始课程。
 
 默认 160 分钟、36 名学生的本次结果：
 
@@ -129,7 +117,7 @@ S001,5,home,rest,L_DORM_N,80,2,0
 - `seat_engine_behavior`：容量、FIFO、同分钟释放复用、多资源、重复请求、异常输入不改变有效状态、区间忙碌时间。
 - `activity_contracts`：A 保存加载座位、非法重置原子性、B 拒绝错配/重复座位事件、活动边界与终态。
 - `activity_schedule_integration`：真实 A/B/C 手算双人流程、按分钟核对资源守恒、36 人样例、中文路径、零距离午餐、提前截止、输入乱序、覆盖保护及非法配置。
-- `all_stage_experiments`：全部报告能生成、静态数据链接存在、原输入未被改写、每组仅改变约定变量、早截止口径。
+- `all_stage_experiments`：各组 CSV 可读、原输入未被改写、每组仅改变约定变量、早截止口径。
 
 完整回归命令：
 
@@ -139,6 +127,6 @@ cmake --build build --config Debug
 ctest --test-dir build -C Debug --output-on-failure
 ```
 
-GitHub Actions 对 Linux、Windows 执行同一套检查。浏览器环境不能打开本地 `file:` 页面，因此本轮离线报告检查覆盖数据、链接与脚本，不宣称完成浏览器截图或跨浏览器视觉验收。
+GitHub Actions 对 Linux、Windows 执行同一套 CTest 检查。
 
 “全部完成”指这里列明的三个功能升级阶段。自行车/校车、跨日多餐、动态封路、主动取消活动、座位预测、实时地图动画，以及统一账号菜单和课程最终材料不属于这三阶段的已实现功能。

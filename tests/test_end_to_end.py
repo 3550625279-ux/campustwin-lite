@@ -39,7 +39,7 @@ def main():
         temporary.mkdir()
         unicode_students = temporary / "学生.csv"
         shutil.copyfile(students, unicode_students)
-        result = run([demo_b, "--students", unicode_students, "--all", "--wait", 3, "--duration", 20])
+        result = run([demo_b, "--students", unicode_students, "--schedule", root / "data/schedules/mvp.csv", "--all", "--wait", 3, "--duration", 20])
         assert "SUMMARY students=20 arrivals=20 finished=20" in result.stdout
         malformed_unicode_students = temporary / "学生错误.csv"
         bad_data = rows(students)
@@ -53,7 +53,7 @@ def main():
 
         def simulation(destination, *, scenario_path=scenario, students_path=students, duration=120,
                        expected_success=True):
-            return run([app, "--scenario", scenario_path, "--students", students_path,
+            return run([app, "--schedule", root / "data/schedules/mvp.csv", "--scenario", scenario_path, "--students", students_path,
                         "--duration", duration, "--output", destination], expected_success)
 
         first, second = temporary / "run1", temporary / "run2"

@@ -118,7 +118,7 @@ struct StudentSpec {
     SimTime meal_minutes{5};
     LunchPolicy lunch_policy{LunchPolicy::Fixed};
     std::string meal_type{"standard"};
-    std::vector<ActivitySpec> activities{}; // empty preserves the original lunch-and-return flow
+    std::vector<ActivitySpec> activities{}; // required ordered schedule for simulation
 };
 
 struct SimulationSettings {

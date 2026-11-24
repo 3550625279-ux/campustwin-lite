@@ -37,7 +37,6 @@ with tempfile.TemporaryDirectory(prefix='campus_service_test_') as td:
     summary = rows(output/'summary.csv')
     require([x['variant'] for x in summary] == ['dedicated', 'flexible'], 'both experiment variants')
     require(all(x['students'] == '60' for x in summary), 'population count')
-    require((output/'report.html').is_file(), 'report missing')
     require(len(rows(output/'window_comparison.csv')) == 18, '3 facilities x 3 windows x 2 variants')
     require(len(rows(output/'student_services.csv')) == 120, 'one record per student and variant')
     for row in summary:

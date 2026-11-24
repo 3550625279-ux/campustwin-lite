@@ -25,7 +25,7 @@ endforeach()
 target_sources(campustwin_environment PRIVATE src/environment/accounts.cpp)
 target_sources(campustwin_resources PRIVATE src/resources/seats.cpp)
 
-add_library(campustwin_tui STATIC src/tui/tui.cpp)
+add_library(campustwin_tui STATIC src/tui/tui.cpp src/tui/run_cache.cpp)
 target_link_libraries(campustwin_tui PUBLIC campustwin_contracts
     PRIVATE campustwin_environment campustwin_students campustwin_resources
             campustwin_reporting campustwin_simulation)

@@ -9,9 +9,11 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <termios.h>
 #endif
 
 #include "campustwin/tui.hpp"
+#include "run_cache.hpp"
 #include "campustwin/environment.hpp"
 #include "campustwin/reporting.hpp"
 #include "campustwin/resources.hpp"
@@ -164,6 +166,30 @@ std::string pad_left(const std::string& text, std::size_t width) {
     return std::string(width - w, ' ') + text;
 }
 
+void print_wrapped_tokens(std::ostream& out, const std::string& prefix,
+                          const std::string& cont_indent, const std::vector<std::string>& items,
+                          const std::string& sep, std::size_t max_cols = 96) {
+    out << prefix;
+    std::size_t cur_w = display_width(prefix);
+    const std::size_t indent_w = display_width(cont_indent);
+    const std::size_t sep_w = display_width(sep);
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const std::size_t item_w = display_width(items[i]);
+        if (i > 0) {
+            if (cur_w + sep_w + item_w > max_cols) {
+                out << '\n' << cont_indent;
+                cur_w = indent_w;
+            } else {
+                out << sep;
+                cur_w += sep_w;
+            }
+        }
+        out << items[i];
+        cur_w += item_w;
+    }
+    out << '\n';
+}
+
 std::string trim(std::string s) {
     while (!s.empty() && (s.back() == '\r' || s.back() == '\n' || s.back() == ' ' || s.back() == '\t')) {
         s.pop_back();
@@ -235,6 +261,17 @@ const char* state_zh(StudentState state) {
     return "未知";
 }
 
+constexpr std::pair<StudentState, const char*> ordered_student_states[] = {
+    {StudentState::AtLocation, ansi::dim},
+    {StudentState::Moving, ansi::bright_cyan},
+    {StudentState::Queued, ansi::bright_yellow},
+    {StudentState::InService, ansi::magenta},
+    {StudentState::WaitingSeat, ansi::bright_red},
+    {StudentState::Eating, ansi::bright_green},
+    {StudentState::InActivity, ansi::cyan},
+    {StudentState::Finished, ansi::green},
+};
+
 std::string make_bar(double ratio, std::size_t width, bool use_color, const char* fill_ansi = ansi::bright_cyan) {
     const double clamped = std::max(0.0, std::min(1.0, ratio));
     const auto filled = static_cast<std::size_t>(std::llround(clamped * static_cast<double>(width)));
@@ -265,78 +302,15 @@ bool parse_int(const std::string& text, Int& out) {
 
 }  // namespace
 
-const char* role_name(UserRole role) {
-    switch (role) {
-    case UserRole::Guest: return "guest";
-    case UserRole::Student: return "student";
-    case UserRole::Admin: return "admin";
-    }
-    return "guest";
-}
-
-const char* role_label_zh(UserRole role) {
-    switch (role) {
-    case UserRole::Guest: return "访客 (只读浏览/仿真/查询)";
-    case UserRole::Student: return "普通用户 (仿真/实验/数据导出)";
-    case UserRole::Admin: return "系统管理员 (全权限含场景编辑)";
-    }
-    return "访客";
-}
-
-RoleStore::RoleStore(std::filesystem::path file) : file_(std::move(file)) {
-    std::error_code ec;
-    if (file_.empty() || !std::filesystem::exists(file_, ec) || ec) return;
-    std::ifstream in(file_, std::ios::binary);
-    if (!in) return;
-    std::string line;
-    if (!std::getline(in, line)) return;
-    while (std::getline(in, line)) {
-        line = trim(line);
-        if (line.empty()) continue;
-        const auto comma = line.find(',');
-        if (comma == std::string::npos) continue;
-        const auto user = line.substr(0, comma);
-        const auto role_str = line.substr(comma + 1);
-        if (role_str == "admin") roles_[user] = UserRole::Admin;
-        else if (role_str == "student") roles_[user] = UserRole::Student;
-    }
-}
-
-UserRole RoleStore::role_of(const std::string& username) const {
-    const auto found = roles_.find(username);
-    if (found != roles_.end()) return found->second;
-    if (username == "admin") return UserRole::Admin;
-    return UserRole::Student;
-}
-
-void RoleStore::set_role(const std::string& username, UserRole role) {
-    roles_[username] = role;
-    save();
-}
-
-void RoleStore::save() const {
-    if (file_.empty()) return;
-    std::error_code ec;
-    if (!file_.parent_path().empty()) {
-        std::filesystem::create_directories(file_.parent_path(), ec);
-    }
-    std::ofstream out(file_, std::ios::binary | std::ios::trunc);
-    if (!out) throw ValidationError("cannot write role file: " + file_.u8string());
-    out << "username,role\n";
-    for (const auto& [user, role] : roles_) {
-        out << user << ',' << role_name(role) << '\n';
-    }
-}
-
 SimTime RecordedRun::peak_congestion_minute() const {
     SimTime best_tick = 0;
-    std::size_t best_score = 0;
+    std::size_t most_waiting = 0;
     for (const auto& frame : frames) {
-        std::size_t score = 0;
-        for (const auto& f : frame.facilities) score += f.queue_length * 2 + f.in_service;
-        for (const auto& s : frame.seats) score += s.queued * 2 + s.occupied;
-        if (score > best_score) {
-            best_score = score;
+        std::size_t waiting = 0;
+        for (const auto& f : frame.facilities) waiting += f.queue_length;
+        for (const auto& s : frame.seats) waiting += s.queued;
+        if (waiting > most_waiting) {
+            most_waiting = waiting;
             best_tick = frame.at;
         }
     }
@@ -345,10 +319,44 @@ SimTime RecordedRun::peak_congestion_minute() const {
 
 std::size_t RecordedRun::finished_students_at(SimTime tick) const {
     if (tick < 0 || static_cast<std::size_t>(tick) >= frames.size()) return 0;
-    const auto& snaps = frames[static_cast<std::size_t>(tick)].students;
-    return static_cast<std::size_t>(std::count_if(snaps.begin(), snaps.end(), [](const StudentSnapshot& s) {
-        return s.state == StudentState::Finished;
-    }));
+    return frames[static_cast<std::size_t>(tick)].finished_students;
+}
+
+namespace {
+StudentSnapshot snapshot_at(const std::vector<StudentSnapshot>& history, SimTime tick) {
+    const auto upper = std::upper_bound(history.begin(), history.end(), tick,
+        [](SimTime at, const StudentSnapshot& snapshot) { return at < snapshot.at; });
+    auto snapshot = *std::prev(upper);
+    snapshot.at = tick;
+    return snapshot;
+}
+
+bool same_state(const StudentSnapshot& a, const StudentSnapshot& b) {
+    if (a.state != b.state || a.location_id != b.location_id ||
+        a.lunch_facility != b.lunch_facility || a.occupied_seat != b.occupied_seat ||
+        a.move.has_value() != b.move.has_value()) return false;
+    if (!a.move) return true;
+    const auto& x = *a.move;
+    const auto& y = *b.move;
+    return std::tie(x.from, x.to, x.depart_at, x.arrive_at, x.distance_m) ==
+           std::tie(y.from, y.to, y.depart_at, y.arrive_at, y.distance_m);
+}
+}  // namespace
+
+std::vector<StudentSnapshot> RecordedRun::students_at(SimTime tick) const {
+    std::vector<StudentSnapshot> result;
+    if (tick < 0 || static_cast<std::size_t>(tick) >= frames.size()) return result;
+    result.reserve(student_history.size());
+    for (const auto& history : student_history) result.push_back(snapshot_at(history, tick));
+    return result;
+}
+
+std::optional<StudentSnapshot> RecordedRun::student_at(const StudentId& id, SimTime tick) const {
+    if (tick < 0 || static_cast<std::size_t>(tick) >= frames.size()) return std::nullopt;
+    const auto it = std::lower_bound(student_history.begin(), student_history.end(), id,
+        [](const auto& history, const StudentId& sid) { return history.front().student_id < sid; });
+    if (it == student_history.end() || it->front().student_id != id) return std::nullopt;
+    return snapshot_at(*it, tick);
 }
 
 std::size_t RecordedRun::completed_activities_count() const {
@@ -401,6 +409,7 @@ void InMemoryRunObserver::begin(const SimulationSettings& settings, const Campus
     run_.settings = settings;
     run_.scenario = scenario;
     run_.frames.clear();
+    run_.student_history.clear();
     run_.frames.reserve(static_cast<std::size_t>(settings.duration_minutes) + 1);
     run_.activities.clear();
     run_.summaries.clear();
@@ -421,7 +430,18 @@ void InMemoryRunObserver::write_tick(SimTime now,
     frame.completed = completed;
     frame.arrivals = arrivals;
     frame.started = started;
-    frame.students = students;
+    if (now == 0) run_.student_history.resize(students.size());
+    if (students.size() != run_.student_history.size())
+        throw ValidationError("InMemoryRunObserver: student count changed");
+    for (std::size_t i = 0; i < students.size(); ++i) {
+        const auto& student = students[i];
+        auto& history = run_.student_history[i];
+        if ((i > 0 && students[i - 1].student_id >= student.student_id) ||
+            (!history.empty() && history.back().student_id != student.student_id))
+            throw ValidationError("InMemoryRunObserver: unexpected student order");
+        if (history.empty() || !same_state(history.back(), student)) history.push_back(student);
+        if (student.state == StudentState::Finished) ++frame.finished_students;
+    }
     frame.facilities = facilities;
     run_.frames.push_back(std::move(frame));
 }
@@ -517,7 +537,7 @@ std::filesystem::path detect_data_root(const std::filesystem::path& executable_p
     }
     for (const auto& candidate : candidates) {
         if (candidate.empty()) continue;
-        if (fs::exists(candidate / "data/scenarios/mvp/locations.csv", ec) && !ec) {
+        if (fs::exists(candidate / "data/scenarios/campus_flagship/locations.csv", ec) && !ec) {
             return candidate;
         }
     }
@@ -531,27 +551,24 @@ ConsoleWorkbench::ConsoleWorkbench(WorkbenchOptions options, std::istream& in, s
       color_(setup_console_utf8_and_vt(options_.enable_color, out)),
       root_(options_.data_root.empty() ? detect_data_root() : options_.data_root),
       account_file_(options_.accounts_file ? *options_.accounts_file : (root_ / "data/private/accounts.db")),
-      accounts_(account_file_),
-      roles_(account_file_.parent_path() / "roles.csv") {
+      accounts_(account_file_) {}
+
+void ConsoleWorkbench::load_initial_scenario() {
+    cached_run_.reset();
+    lunch_plan_.reset();
+    scenario_dirty_ = false;
+    playback_speed_ = 1;
     if (options_.scenario_dir || options_.students_file || options_.schedule_file) {
         active_preset_title_ = "自定义命令行参数配置";
-        scenario_path_ = options_.scenario_dir ? *options_.scenario_dir : (root_ / "data/scenarios/mvp");
-        students_path_ = options_.students_file ? *options_.students_file : (root_ / "data/students/mvp.csv");
+        scenario_path_ = options_.scenario_dir ? *options_.scenario_dir : (root_ / "data/scenarios/campus_flagship");
+        students_path_ = options_.students_file ? *options_.students_file : (root_ / "data/students/campus_flagship.csv");
         schedule_path_ = options_.schedule_file;
         settings_.duration_minutes = options_.duration_minutes.value_or(schedule_path_ ? 160 : 120);
         policy_override_ = options_.policy_override;
         environment_.load_directory(scenario_path_);
         reload_population();
     } else {
-        // Default to Stage-3 flagship scenario (campus_day) if present, else MVP.
-        const auto list = presets();
-        std::size_t idx = list.size() >= 5 ? 4 : 0;
-        load_preset(idx);
-        if (options_.duration_minutes) settings_.duration_minutes = *options_.duration_minutes;
-        if (options_.policy_override) {
-            policy_override_ = options_.policy_override;
-            reload_population();
-        }
+        load_flagship(LunchPlan::Staggered40);
     }
 }
 
@@ -560,68 +577,86 @@ std::string ConsoleWorkbench::style(const char* ansi_code, const std::string& te
     return std::string(ansi_code) + text + ansi::reset;
 }
 
-std::vector<ConsoleWorkbench::Preset> ConsoleWorkbench::presets() const {
-    return {
-        {"mvp",
-         "MVP 经典午餐手算基准",
-         "4地点 / 20学生 / 1食堂2窗口 / 验证170人·分钟标准手算队列",
-         "data/scenarios/mvp",
-         "data/students/mvp.csv",
-         std::nullopt,
-         120},
-        {"two_canteens",
-         "双食堂扩容与步速分析",
-         "5地点 / 40学生 / 远近双食堂 / 对比增加窗口与提升步速",
-         "data/scenarios/two_canteens",
-         "data/students/two_canteens.csv",
-         std::nullopt,
-         120},
-        {"dynamic_campus",
-         "阶段一：动态拥堵感知选食堂",
-         "8地点 / 60学生 / 对比 fixed·nearest·fastest 与 t-1 冻结预测",
-         "data/scenarios/dynamic_campus",
-         "data/students/dynamic_campus.csv",
-         std::nullopt,
-         120},
-        {"service_campus",
-         "阶段二：异质窗口与餐品增广匹配",
-         "11地点 / 60学生 / 3食堂9窗口 / 米饭·面食·现炒异质兼容分配",
-         "data/scenarios/service_campus",
-         "data/students/service_campus.csv",
-         std::nullopt,
-         120},
-        {"campus_day",
-         "阶段三：全天多活动日程与有限座位 (旗舰)",
-         "16地点 / 38道路 / 36学生 / 216项课程·午餐·自习·归寝活动 / 6处座位池",
-         "data/scenarios/campus_day",
-         "data/students/campus_day.csv",
-         std::filesystem::path("data/schedules/campus_day.csv"),
-         160},
-    };
+const char* ConsoleWorkbench::lunch_plan_name(LunchPlan plan) {
+    switch (plan) {
+    case LunchPlan::Concentrated: return "12:00 集中";
+    case LunchPlan::Staggered20: return "20 分钟错峰";
+    case LunchPlan::Staggered40: return "40 分钟错峰";
+    }
+    throw ValidationError("未知午餐方案");
 }
 
-void ConsoleWorkbench::load_preset(std::size_t index) {
-    const auto list = presets();
-    if (index >= list.size()) throw ValidationError("invalid preset index");
-    const auto& p = list[index];
-    scenario_path_ = root_ / p.scenario_rel;
-    students_path_ = root_ / p.students_rel;
-    schedule_path_ = p.schedule_rel ? std::optional<std::filesystem::path>(root_ / *p.schedule_rel) : std::nullopt;
-    settings_.duration_minutes = p.default_duration;
-    policy_override_.reset();
-    environment_.load_directory(scenario_path_);
+void ConsoleWorkbench::apply_lunch_plan(std::vector<StudentSpec>& population, LunchPlan plan) {
+    constexpr SimTime noon = 240;  // 12:00, four hours after the flagship campus opens.
+    for (auto& student : population) {
+        for (auto& activity : student.activities) {
+            if (activity.kind != ActivityKind::Lunch) continue;
+            switch (plan) {
+            case LunchPlan::Concentrated: activity.start_minute = noon; break;
+            case LunchPlan::Staggered20:
+                activity.start_minute = noon + (activity.start_minute - noon) / 2;
+                break;
+            case LunchPlan::Staggered40: break;
+            }
+        }
+    }
+}
+
+bool ConsoleWorkbench::choose_flagship() {
+    out_ << "\n选择旗舰校园午餐实验 · 9000 人 · 08:00–18:00\n"
+         << "  [1] 12:00 集中出发\n"
+         << "  [2] 20 分钟错峰（12:00–12:19）\n"
+         << "  [3] 40 分钟错峰（12:00–12:39，默认）\n"
+         << "  [0] 返回主菜单\n";
+
+    std::string input;
+    while (prompt_line("午餐方案 [1–3]> ", input)) {
+        if (input == "0") return false;
+        if (input.empty() || input == "3") {
+            load_flagship(LunchPlan::Staggered40);
+            return true;
+        }
+        if (input == "1" || input == "2") {
+            load_flagship(input == "1" ? LunchPlan::Concentrated : LunchPlan::Staggered20);
+            return true;
+        }
+        out_ << "请输入 1、2、3，或 0。\n";
+    }
+    return false;
+}
+
+void ConsoleWorkbench::load_flagship(LunchPlan plan) {
+    const auto scene = root_ / "data/scenarios/campus_flagship";
+    const auto people = root_ / "data/students/campus_flagship.csv";
+    const auto schedule = root_ / "data/schedules/campus_flagship.csv";
+    CampusEnvironment next;
+    next.load_directory(scene);
+    auto population = read_scheduled_students(people, schedule);
+    apply_lunch_plan(population, plan);
+    if (options_.policy_override) {
+        for (auto& student : population) student.lunch_policy = *options_.policy_override;
+    }
+    StudentEngine validator;
+    validator.reset(next.scenario(), population);
+
+    environment_ = std::move(next);
+    population_ = std::move(population);
+    scenario_path_ = scene;
+    students_path_ = people;
+    schedule_path_ = schedule;
+    settings_.duration_minutes = options_.duration_minutes.value_or(600);
+    policy_override_ = options_.policy_override;
+    lunch_plan_ = plan;
     scenario_dirty_ = false;
-    active_preset_title_ = p.title;
-    reload_population();
+    active_preset_title_ = std::string("旗舰校园 · ") + lunch_plan_name(plan);
+    cached_run_.reset();
 }
 
 void ConsoleWorkbench::reload_population() {
-    auto loaded = read_student_specs(students_path_);
+    auto loaded = read_scheduled_students(students_path_, schedule_path_);
+    if (lunch_plan_) apply_lunch_plan(loaded, *lunch_plan_);
     if (policy_override_) {
         for (auto& s : loaded) s.lunch_policy = *policy_override_;
-    }
-    if (schedule_path_) {
-        loaded = read_schedules(*schedule_path_, loaded);
     }
     // Validate compatibility against current scenario early via a dry reset on StudentEngine.
     StudentEngine validator;
@@ -630,35 +665,45 @@ void ConsoleWorkbench::reload_population() {
     cached_run_.reset();
 }
 
-RecordedRun ConsoleWorkbench::execute_simulation(
-    const CampusEnvironment& env,
-    std::vector<StudentSpec> pop,
-    SimTime duration,
-    const std::optional<std::filesystem::path>& csv_output) const {
-    SimulationSettings run_settings{duration};
+std::filesystem::path ConsoleWorkbench::user_directory() const {
+    // A reversible encoding keeps case-sensitive account names distinct on Windows.
+    constexpr char hex[] = "0123456789abcdef";
+    std::string folder = "u-";
+    for (unsigned char c : current_user_) {
+        folder.push_back(hex[c >> 4]);
+        folder.push_back(hex[c & 15]);
+    }
+    auto account_root = account_file_;
+    account_root += ".users";
+    return account_root / folder;
+}
+
+RecordedRun ConsoleWorkbench::load_or_simulate(
+    const CampusEnvironment& env, const std::vector<StudentSpec>& population, SimTime duration) {
+    const auto key = make_run_cache_key(user_directory() / "runs", env.scenario(), population, duration);
+    if (auto saved = load_run_cache(key, env.scenario(), population, duration)) {
+        out_ << "已读取本地仿真结果。\n";
+        return std::move(*saved);
+    }
+    out_ << "正在计算仿真，共 " << population.size() << " 名学生…\n" << std::flush;
     StudentEngine students;
     FacilityEngine facilities;
     SeatEngine seats;
-    InMemoryRunObserver memory_writer;
-    memory_writer.set_population(pop);
-
-    if (csv_output) {
-        const bool detailed = (!pop.empty() && !pop.front().activities.empty()) || !env.scenario().seat_pools.empty();
-        CsvRunWriter file_writer(*csv_output, detailed);
-        CompositeRunWriter composite;
-        composite.add_writer(memory_writer);
-        composite.add_writer(file_writer);
-        SimulationRunner{}.run(run_settings, env, pop, students, facilities, composite, &seats);
-    } else {
-        SimulationRunner{}.run(run_settings, env, pop, students, facilities, memory_writer, &seats);
+    InMemoryRunObserver observer;
+    observer.set_population(population);
+    SimulationRunner{}.run({duration}, env, population, students, facilities, observer, &seats);
+    auto run = observer.take_run();
+    try {
+        save_run_cache(key, run);
+    } catch (const std::exception& error) {
+        out_ << "本地结果保存失败：" << error.what() << '\n';
     }
-    return memory_writer.take_run();
+    return run;
 }
 
 void ConsoleWorkbench::ensure_run_cached() {
-    if (!cached_run_) {
-        cached_run_ = execute_simulation(environment_, population_, settings_.duration_minutes);
-    }
+    if (!cached_run_)
+        cached_run_ = load_or_simulate(environment_, population_, settings_.duration_minutes);
 }
 
 void ConsoleWorkbench::print_banner() const {
@@ -677,12 +722,7 @@ void ConsoleWorkbench::print_status_card() const {
     std::size_t total_activities = 0;
     for (const auto& s : population_) total_activities += s.activities.size();
 
-    const std::string user_badge = current_user_.empty()
-        ? style(ansi::yellow, "[未登录 · 访客 Guest]")
-        : (current_role_ == UserRole::Admin
-               ? style(ansi::bold_green, "[管理员 Admin: " + current_user_ + "]")
-               : style(ansi::bright_cyan, "[已登录 Student: " + current_user_ + "]"));
-
+    const auto user_badge = style(ansi::bright_cyan, "[当前账号 " + current_user_ + "]");
     out_ << "\n" << style(ansi::bold, "▸ 当前工作台状态") << "  " << user_badge << '\n';
     out_ << "  当前方案 : " << style(ansi::bold_white, active_preset_title_)
          << (scenario_dirty_ ? style(ansi::bold_yellow, "  [沙盒已修改·未保存*]") : "") << '\n';
@@ -691,9 +731,9 @@ void ConsoleWorkbench::print_status_card() const {
          << sc.facilities.size() << " 座食堂 (" << total_windows << " 个窗口) | "
          << sc.seat_pools.size() << " 处有限座位池\n";
     out_ << "  学生配置 : " << population_.size() << " 名学生 | "
-         << (total_activities > 0 ? ("有序多活动日程 (" + std::to_string(total_activities) + " 项活动)") : "经典单次午餐与返程")
+         << std::to_string(total_activities) << " 项日程"
          << " | 时长 " << settings_.duration_minutes << " 分钟"
-         << " | 策略: " << (policy_override_ ? policy_text(*policy_override_) : "按学生CSV配置") << '\n';
+         << " | 回放 " << playback_speed_ << " 倍 | 策略: " << (policy_override_ ? policy_text(*policy_override_) : "按学生CSV配置") << '\n';
     if (cached_run_) {
         const auto done = cached_run_->finished_students_at(cached_run_->settings.duration_minutes);
         out_ << "  仿真缓存 : " << style(ansi::bright_green, "已就绪")
@@ -704,7 +744,7 @@ void ConsoleWorkbench::print_status_card() const {
         }
         out_ << ")\n";
     } else {
-        out_ << "  仿真缓存 : " << style(ansi::dim, "待运行 (选择 [2] 或 [3] 自动执行毫秒级引擎计算)") << '\n';
+        out_ << "  仿真缓存 : " << style(ansi::dim, "待运行（进入仿真或学生档案时计算）") << '\n';
     }
 }
 
@@ -718,28 +758,91 @@ bool ConsoleWorkbench::prompt_line(const std::string& label, std::string& line) 
     return true;
 }
 
+bool ConsoleWorkbench::prompt_password(std::string& password) {
+    out_ << "密码> " << std::flush;
+#ifdef _WIN32
+    const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+    DWORD mode = 0;
+    const bool hidden = &in_ == &std::cin && GetConsoleMode(input, &mode) &&
+                        SetConsoleMode(input, mode & ~ENABLE_ECHO_INPUT);
+#else
+    termios mode{};
+    bool hidden = false;
+    if (&in_ == &std::cin && tcgetattr(STDIN_FILENO, &mode) == 0) {
+        auto changed = mode;
+        changed.c_lflag &= ~ECHO;
+        hidden = tcsetattr(STDIN_FILENO, TCSANOW, &changed) == 0;
+    }
+#endif
+    const bool read = static_cast<bool>(std::getline(in_, password));
+#ifdef _WIN32
+    if (hidden) SetConsoleMode(input, mode);
+#else
+    if (hidden) tcsetattr(STDIN_FILENO, TCSANOW, &mode);
+#endif
+    out_ << '\n';
+    return read;
+}
+
+bool ConsoleWorkbench::authenticate() {
+    while (true) {
+        out_ << "\nCampusTwin Lite · 本地账号\n"
+             << "  [1] 登录\n  [2] 注册\n  [0] 关闭程序\n";
+        std::string choice;
+        if (!prompt_line("选择> ", choice) || choice == "0") return false;
+        if (choice != "1" && choice != "2") {
+            out_ << "请输入 1、2 或 0。\n";
+            continue;
+        }
+        std::string user, password;
+        if (choice == "2") out_ << "用户名 3–32 位字母、数字或下划线，密码至少 8 位。\n";
+        if (!prompt_line("用户名> ", user) || !prompt_password(password)) return false;
+        try {
+            if (choice == "2") accounts_.register_user(user, password);
+            else if (!accounts_.login(user, password)) {
+                out_ << "用户名或密码错误。\n";
+                continue;
+            }
+            current_user_ = std::move(user);
+            out_ << (choice == "2" ? "注册成功，已登录 " : "已登录 ") << current_user_ << "。\n";
+            return true;
+        } catch (const std::exception& error) {
+            out_ << "账号操作失败：" << error.what() << '\n';
+        }
+    }
+}
+
 int ConsoleWorkbench::run() {
-    print_banner();
+    while (authenticate()) {
+        load_initial_scenario();
+        print_banner();
+        if (!run_session()) break;
+
+        cached_run_.reset();
+        current_user_.clear();
+        out_ << "已退出登录。下次登录该账号可继续使用本地结果。\n";
+    }
+    return 0;
+}
+
+bool ConsoleWorkbench::run_session() {
     while (true) {
         print_status_card();
         out_ << "\n" << style(ansi::bold, "▸ 主功能菜单 (输入编号回车)") << '\n'
-             << "  " << style(ansi::bold_cyan, "[1]") << " 切换预设场景 / 配置仿真参数        "
-             << style(ansi::dim, "(5套官方合成校园场景一键切换)") << '\n'
+             << "  " << style(ansi::bold_cyan, "[1]") << " 场景与回放设置        "
+             << style(ansi::dim, "(旗舰校园 / 自定义场景)") << '\n'
              << "  " << style(ansi::bold_cyan, "[2]") << " 运行仿真 · 实时逐分钟动态看板      "
              << style(ansi::dim, "(动画播放 / 峰值跳转 / 窗口与座位队列监控)") << '\n'
              << "  " << style(ansi::bold_cyan, "[3]") << " 学生个体轨迹 · 选食堂决策与日程透视 "
              << style(ansi::dim, "(单人全天甘特时间轴 / 候选食堂打分表)") << '\n'
-             << "  " << style(ansi::bold_cyan, "[4]") << " 控制变量对照实验中心               "
-             << style(ansi::dim, "(策略对比 / 专用vs通用窗口 / 扩容与封路实验)") << '\n'
+             << "  " << style(ansi::bold_cyan, "[4]") << " 午餐实验                           "
+             << style(ansi::dim, "(单方案回放 / 总结果对照)") << '\n'
              << "  " << style(ansi::bold_cyan, "[5]") << " 校园路网拓扑与 Dijkstra 最短路导航  "
              << style(ansi::dim, "(地点设施总览 / 任意两点路径与距离矩阵)") << '\n'
              << "  " << style(ansi::bold_cyan, "[6]") << " 校园场景沙盒在线编辑器             "
-             << style(ansi::dim, "(增删改地点·道路·窗口·座位池, 需管理员权限)") << '\n'
-             << "  " << style(ansi::bold_cyan, "[7]") << " 本地账号认证与角色权限中心         "
-             << style(ansi::dim, "(PBKDF2-SHA256 加密存储 / 一键演示管理员)") << '\n'
-             << "  " << style(ansi::bold_cyan, "[8]") << " 导出标准 CSV 结果 / 生成离线 HTML  "
-             << style(ansi::dim, "(输出5/8份CSV契约文件或全阶段网页报告)") << '\n'
-             << "  " << style(ansi::bold_yellow, "[0]") << " 退出系统 (quit)\n\n";
+             << style(ansi::dim, "(修改并保存个人场景)") << '\n'
+             << "  " << style(ansi::bold_cyan, "[7]") << " 退出登录，返回登录/注册页" << '\n'
+             << "  " << style(ansi::bold_yellow, "[0]") << " 关闭程序 (quit)\n\n";
 
         std::string choice;
         if (!prompt_line("campustwin> ", choice)) {
@@ -747,58 +850,50 @@ int ConsoleWorkbench::run() {
         }
         if (choice.empty()) continue;
         try {
-            if (choice == "0" || choice == "q" || choice == "quit" || choice == "exit") {
+            if (choice == "7" || choice == "0" || choice == "q" || choice == "quit" || choice == "exit") {
                 if (scenario_dirty_) {
-                    out_ << style(ansi::yellow, "提示: 当前沙盒场景存在未保存修改。再次输入 quit 确认退出，或去 [6] 保存。\n");
+                    out_ << style(ansi::yellow, "当前场景有未保存的修改，可在 [6] 保存。\n");
                     std::string confirm;
-                    if (!prompt_line("确认退出? (y/N)> ", confirm)) break;
+                    const auto label = choice == "7"
+                        ? "放弃修改并退出登录？(y/N)> " : "放弃修改并关闭程序？(y/N)> ";
+                    if (!prompt_line(label, confirm)) break;
                     if (confirm != "y" && confirm != "Y" && confirm != "quit") continue;
                 }
+                if (choice == "7") return true;
                 out_ << style(ansi::bright_green, "已退出 CampusTwin Lite 交互工作台。\n");
                 break;
             }
-            if (choice == "1") menu_presets();
+            if (choice == "1") menu_scenarios();
             else if (choice == "2") menu_simulation_playback();
             else if (choice == "3") menu_student_inspector();
-            else if (choice == "4") menu_experiments();
+            else if (choice == "4") menu_lunch_timing_experiment();
             else if (choice == "5") menu_map_and_routes();
             else if (choice == "6") menu_scenario_editor();
-            else if (choice == "7") menu_accounts();
-            else if (choice == "8") menu_export();
             else {
-                out_ << style(ansi::red, "未知菜单编号: " + choice + "，请输入 0-8。\n");
+                out_ << style(ansi::red, "未知菜单编号: " + choice + "，请选择上面的功能。\n");
             }
         } catch (const std::exception& ex) {
             out_ << style(ansi::bold_red, std::string("操作异常拦截: ") + ex.what()) << '\n';
         }
     }
-    return 0;
+    return false;
 }
 
-void ConsoleWorkbench::menu_presets() {
-    const auto list = presets();
-    out_ << "\n" << style(ansi::bold_cyan, "─── [1] 切换预设校园场景与仿真参数 ───") << '\n';
-    for (std::size_t i = 0; i < list.size(); ++i) {
-        out_ << "  " << style(ansi::bold_white, "[" + std::to_string(i + 1) + "] ")
-             << pad_right(list[i].title, 36) << " " << style(ansi::dim, list[i].subtitle) << '\n';
-    }
-    out_ << "  " << style(ansi::bold_white, "[6] ") << "修改当前仿真时长 / 全局选食堂策略覆盖 (fixed | nearest | fastest)\n"
-         << "  " << style(ansi::bold_white, "[7] ") << "手动输入自定义场景目录与学生/日程 CSV 路径\n"
-         << "  " << style(ansi::dim, "[0] 返回主菜单") << '\n';
+void ConsoleWorkbench::menu_scenarios() {
+    out_ << "\n" << style(ansi::bold_cyan, "─── 校园场景与参数 ───") << '\n'
+         << "  [1] 恢复旗舰默认场景\n"
+         << "  [2] 自定义场景 · 选择文件夹中的 CSV\n"
+         << "  [3] 仿真时长 / 选食堂策略 / 回放速度\n"
+         << "  [0] 返回主菜单\n";
 
     std::string input;
-    if (!prompt_line("选择预设或操作 [0-7]> ", input) || input.empty() || input == "0") return;
-    int sel = 0;
-    if (!parse_int(input, sel) || sel < 1 || sel > 7) {
-        out_ << style(ansi::red, "无效选项。\n");
+    if (!prompt_line("选择 [0–3]> ", input) || input.empty() || input == "0") return;
+    if (input == "1") {
+        load_flagship(LunchPlan::Staggered40);
+        out_ << style(ansi::bright_green, "已加载 " + active_preset_title_ + "。\n");
         return;
     }
-    if (sel >= 1 && sel <= 5) {
-        load_preset(static_cast<std::size_t>(sel - 1));
-        out_ << style(ansi::bright_green, "✓ 已加载预设场景: " + active_preset_title_) << '\n';
-        return;
-    }
-    if (sel == 6) {
+    if (input == "3") {
         std::string dur_str;
         if (!prompt_line("输入仿真时长(分钟，直接回车保持 " + std::to_string(settings_.duration_minutes) + ")> ", dur_str)) return;
         if (!dur_str.empty()) {
@@ -817,41 +912,69 @@ void ConsoleWorkbench::menu_presets() {
             else throw ValidationError("策略必须为 default, fixed, nearest 或 fastest");
             reload_population();
         }
+        std::string speed;
+        if (!prompt_line("回放倍率 1–120（回车保持 " + std::to_string(playback_speed_) + " 倍）> ", speed)) return;
+        if (!speed.empty()) {
+            int rate = 0;
+            if (!parse_int(speed, rate) || rate < 1 || rate > 120)
+                throw ValidationError("回放倍率须为 1–120 的整数");
+            playback_speed_ = rate;
+        }
         out_ << style(ansi::bright_green, "✓ 运行参数已更新。\n");
         return;
     }
-    if (sel == 7) {
-        std::string sc_dir, st_file, sch_file;
-        if (!prompt_line("场景目录路径 (如 data/scenarios/campus_day)> ", sc_dir) || sc_dir.empty()) return;
-        if (!prompt_line("学生 CSV 路径 (如 data/students/campus_day.csv)> ", st_file) || st_file.empty()) return;
-        if (!prompt_line("日程 CSV 路径 (可选，直接回车表示不使用日程)> ", sch_file)) return;
-        CampusEnvironment next_env;
-        const auto resolved_sc = std::filesystem::exists(std::filesystem::u8path(sc_dir))
-            ? std::filesystem::u8path(sc_dir)
-            : (root_ / std::filesystem::u8path(sc_dir));
-        const auto resolved_st = std::filesystem::exists(std::filesystem::u8path(st_file))
-            ? std::filesystem::u8path(st_file)
-            : (root_ / std::filesystem::u8path(st_file));
-        next_env.load_directory(resolved_sc);
-        auto next_pop = read_student_specs(resolved_st);
-        std::optional<std::filesystem::path> resolved_sch;
-        if (!sch_file.empty()) {
-            resolved_sch = std::filesystem::exists(std::filesystem::u8path(sch_file))
-                ? std::filesystem::u8path(sch_file)
-                : (root_ / std::filesystem::u8path(sch_file));
-            next_pop = read_schedules(*resolved_sch, next_pop);
+    if (input == "2") {
+        namespace fs = std::filesystem;
+        const auto import_dir = fs::absolute(user_directory() / "imports");
+        fs::create_directories(import_dir);
+        std::vector<fs::path> scenes;
+        for (const auto& entry : fs::directory_iterator(import_dir)) {
+            if (!entry.is_directory()) continue;
+            const auto& dir = entry.path();
+            if (fs::is_regular_file(dir / "locations.csv") && fs::is_regular_file(dir / "roads.csv") &&
+                fs::is_regular_file(dir / "facilities.csv") && fs::is_regular_file(dir / "students.csv") &&
+                fs::is_regular_file(dir / "schedule.csv")) {
+                scenes.push_back(dir);
+            }
         }
+        std::sort(scenes.begin(), scenes.end());
+
+        out_ << "\n─── 选择自定义场景 ───\n"
+             << "  个人导入目录：" << import_dir.u8string() << '\n';
+        if (scenes.empty()) {
+            out_ << "  暂无可选场景。请把一套 CSV 放入个人导入目录下的一个子文件夹。\n"
+                 << "  所需文件：locations.csv、roads.csv、facilities.csv、students.csv、schedule.csv\n";
+        }
+        for (std::size_t i = 0; i < scenes.size(); ++i) {
+            out_ << "  [" << i + 1 << "] " << scenes[i].filename().u8string() << '\n';
+        }
+        out_ << "  [0] 返回主菜单\n";
+        std::size_t selection = 0;
+        while (true) {
+            if (!prompt_line("选择场景编号> ", input) || input.empty() || input == "0") return;
+            if (parse_int(input, selection) && selection > 0 && selection <= scenes.size()) break;
+            out_ << "请输入列表中的场景编号，或输入 0 返回。\n";
+        }
+
+        const auto& resolved_sc = scenes[selection - 1];
+        const auto resolved_st = resolved_sc / "students.csv";
+        const auto resolved_sch = resolved_sc / "schedule.csv";
+        CampusEnvironment next_env;
+        next_env.load_directory(resolved_sc);
+        auto next_pop = read_scheduled_students(resolved_st, resolved_sch);
         StudentEngine check;
         check.reset(next_env.scenario(), next_pop);
         environment_ = std::move(next_env);
         scenario_path_ = resolved_sc;
         students_path_ = resolved_st;
         schedule_path_ = resolved_sch;
+        lunch_plan_.reset();
         population_ = std::move(next_pop);
+        policy_override_.reset();
         scenario_dirty_ = false;
         active_preset_title_ = "自定义场景 (" + resolved_sc.filename().u8string() + ")";
         cached_run_.reset();
-        out_ << style(ansi::bright_green, "✓ 自定义配置加载并校验通过！\n");
+        out_ << style(ansi::bright_green, "已加载 " + active_preset_title_ + "。\n");
     }
 }
 
@@ -913,219 +1036,714 @@ void ConsoleWorkbench::print_run_summary(const RecordedRun& run) const {
     }
 }
 
-void ConsoleWorkbench::render_tick_dashboard(const RecordedRun& run, SimTime tick, bool clear_frame) const {
+void ConsoleWorkbench::render_tick_dashboard(const RecordedRun& run, SimTime tick, PlaybackView view,
+                                             const StudentId& selected_student) const {
     if (tick < 0 || static_cast<std::size_t>(tick) >= run.frames.size()) return;
     const auto& frame = run.frames[static_cast<std::size_t>(tick)];
-    if (clear_frame && color_) {
-        out_ << "\x1b[2J\x1b[H";
+    const auto students = run.students_at(tick);
+    out_ << '\n' << style(ansi::bold_white, "实时仿真态势看板") << "  "
+         << style(ansi::bold_yellow, "第 " + std::to_string(tick) + " / " +
+                                    std::to_string(run.settings.duration_minutes) + " 分钟")
+         << "  ·  " << students.size() << " 人\n";
+    if (active_preset_title_.rfind("旗舰校园", 0) == 0) {
+        const auto minute = 480 + static_cast<std::int64_t>(tick);
+        out_ << "  校园时间 " << std::setw(2) << std::setfill('0') << (minute / 60) % 24
+             << ':' << std::setw(2) << minute % 60 << std::setfill(' ') << '\n';
     }
-
-    const double progress = run.settings.duration_minutes > 0
-        ? static_cast<double>(tick) / static_cast<double>(run.settings.duration_minutes)
-        : 1.0;
-
-    out_ << style(ansi::bold_cyan, "================================================================================") << '\n';
-    out_ << "  " << style(ansi::bold_white, "实时仿真态势看板") << "  | 时钟 "
-         << style(ansi::bold_yellow, "t = " + pad_left(std::to_string(tick), 3) + " / " + std::to_string(run.settings.duration_minutes) + " min")
-         << "  " << make_bar(progress, 22, color_, ansi::bright_cyan) << " " << format_fixed(progress * 100.0, 1) << "%\n";
-    out_ << style(ansi::bold_cyan, "================================================================================") << '\n';
-
-    // 1. 8-State Conservation Summary
-    std::map<StudentState, std::size_t> state_counts;
-    std::map<LocationId, std::size_t> loc_counts;
-    std::map<std::string, std::size_t> road_counts;
-    for (const auto& s : frame.students) {
-        ++state_counts[s.state];
-        if (s.location_id) {
-            ++loc_counts[*s.location_id];
-        } else if (s.move) {
-            ++road_counts[s.move->from + " -> " + s.move->to];
-        }
+    render_tick_overview(run, frame, students);
+    const auto event_details = render_tick_event_summary(run, frame, students, view == PlaybackView::Scene);
+    if (view != PlaybackView::Overview) {
+        render_tick_details(run, frame, students, view, selected_student);
     }
-
-    out_ << "  " << style(ansi::bold, "▸ 学生状态守恒分布 (总人数 = " + std::to_string(frame.students.size()) + ")") << '\n';
-    out_ << "    原地等待:" << pad_left(std::to_string(state_counts[StudentState::AtLocation]), 3)
-         << " | 步行途中:" << style(ansi::bright_cyan, pad_left(std::to_string(state_counts[StudentState::Moving]), 3))
-         << " | 窗口排队:" << style(ansi::bright_yellow, pad_left(std::to_string(state_counts[StudentState::Queued]), 3))
-         << " | 正在取餐:" << style(ansi::magenta, pad_left(std::to_string(state_counts[StudentState::InService]), 3)) << '\n'
-         << "    等候座位:" << style(ansi::bright_red, pad_left(std::to_string(state_counts[StudentState::WaitingSeat]), 3))
-         << " | 正在就餐:" << style(ansi::bright_green, pad_left(std::to_string(state_counts[StudentState::Eating]), 3))
-         << " | 课程/自习:" << style(ansi::cyan, pad_left(std::to_string(state_counts[StudentState::InActivity]), 3))
-         << " | 全部完成:" << style(ansi::green, pad_left(std::to_string(state_counts[StudentState::Finished]), 3)) << '\n';
-
-    // 2. Facility Windows & Queues
-    std::map<FacilityId, std::size_t> win_cap;
-    for (const auto& fc : run.scenario.facilities) win_cap[fc.id] = fc.window_count;
-
-    out_ << "\n  " << style(ansi::bold, "▸ 食堂窗口负载与排队实时监控") << '\n';
-    for (const auto& f : frame.facilities) {
-        const auto cap = win_cap[f.facility_id];
-        const double ratio = cap > 0 ? static_cast<double>(f.in_service) / static_cast<double>(cap) : 0.0;
-        const std::string q_bar(std::min<std::size_t>(f.queue_length, 20), '|');
-        out_ << "    " << pad_right(f.facility_id, 10)
-             << " 窗口 " << make_bar(ratio, 8, color_, ansi::magenta) << " "
-             << f.in_service << "/" << cap
-             << " | 队列: " << pad_right(style(ansi::bright_yellow, q_bar) + (f.queue_length > 20 ? "+" : ""), 22)
-             << " (" << pad_left(std::to_string(f.queue_length), 2) << "人, 峰值" << pad_left(std::to_string(f.max_queue_length), 2) << ")"
-             << " | 完成:" << pad_left(std::to_string(f.completed), 2) << "/" << f.arrived << '\n';
-    }
-
-    // 3. Finite Seat Pools
-    if (!frame.seats.empty()) {
-        out_ << "\n  " << style(ansi::bold, "▸ 有限座位池实时监控 (食堂 & 图书馆)") << '\n';
-        for (const auto& s : frame.seats) {
-            const double ratio = s.capacity > 0 ? static_cast<double>(s.occupied) / static_cast<double>(s.capacity) : 0.0;
-            const std::string q_bar(std::min<std::size_t>(s.queued, 16), '!');
-            out_ << "    " << pad_right(s.location_id, 12)
-                 << " 占座 " << make_bar(ratio, 8, color_, ansi::bright_green) << " "
-                 << s.occupied << "/" << s.capacity
-                 << " | 等座: " << pad_right(style(ansi::bright_red, q_bar), 17)
-                 << " (" << pad_left(std::to_string(s.queued), 2) << "人, 峰值" << pad_left(std::to_string(s.max_queue), 2) << ")"
-                 << " | 累计入座:" << pad_left(std::to_string(s.granted), 2) << '\n';
-        }
-    }
-
-    // 4. Campus Location & Moving Traffic Hotspots
-    out_ << "\n  " << style(ansi::bold, "▸ 校园驻留与在途分布") << '\n';
-    out_ << "    驻留热点: ";
-    std::vector<std::pair<LocationId, std::size_t>> sorted_locs(loc_counts.begin(), loc_counts.end());
-    std::sort(sorted_locs.begin(), sorted_locs.end(), [](const auto& a, const auto& b) {
-        return a.second != b.second ? a.second > b.second : a.first < b.first;
-    });
-    if (sorted_locs.empty()) {
-        out_ << "无驻留人员";
-    } else {
-        for (std::size_t i = 0; i < std::min<std::size_t>(sorted_locs.size(), 6); ++i) {
-            if (i > 0) out_ << "  ";
-            out_ << sorted_locs[i].first << "(" << sorted_locs[i].second << ")";
-        }
-        if (sorted_locs.size() > 6) out_ << " ...";
-    }
-    out_ << "\n    在途路段: ";
-    if (road_counts.empty()) {
-        out_ << style(ansi::dim, "当前分钟无人步行移动");
-    } else {
-        std::size_t shown = 0;
-        for (const auto& [seg, cnt] : road_counts) {
-            if (shown++ >= 4) {
-                out_ << " ...";
-                break;
-            }
-            if (shown > 1) out_ << " | ";
-            out_ << style(ansi::bright_cyan, seg) << "(" << cnt << "人)";
-        }
-    }
-    out_ << '\n';
-
-    // 5. Live Minute Events
-    out_ << "\n  " << style(ansi::bold, "▸ 本分钟关键离散事件流 (t = " + std::to_string(tick) + ")") << '\n';
-    std::vector<std::string> logs;
-    for (const auto& d : frame.decisions) {
-        if (d.selected) {
-            std::string detail = d.student_id + " 按[" +
-                (d.policy == LunchPolicy::Fixed ? "fixed" : d.policy == LunchPolicy::Nearest ? "nearest" : "fastest") +
-                "]选定 " + d.facility_id;
-            if (d.estimated_total_minutes) {
-                detail += " (预计总耗时 " + std::to_string(*d.estimated_total_minutes) + "m)";
-            }
-            logs.push_back(style(ansi::bright_cyan, "[决策] ") + detail);
-        }
-    }
-    for (const auto& a : frame.arrivals) {
-        logs.push_back(style(ansi::yellow, "[到达] ") + a.student_id + " 抵达 " + a.facility_id + " 请求餐品(" + a.meal_type + ")");
-    }
-    for (const auto& st : frame.started) {
-        logs.push_back(style(ansi::magenta, "[取餐] ") + st.student_id + " 进入 " + st.facility_id +
-                       "#W" + std::to_string(st.window_id) + " (排队等待 " + std::to_string(st.wait_minutes) + "m)");
-    }
-    for (const auto& c : frame.completed) {
-        logs.push_back(style(ansi::green, "[出餐] ") + c.student_id + " 在 " + c.facility_id +
-                       "#W" + std::to_string(c.window_id) + " 完成取餐");
-    }
-    for (const auto& g : frame.seat_grants) {
-        logs.push_back(style(ansi::bright_green, "[入座] ") + g.request.student_id + " 获得 " + g.request.location_id +
-                       " 座位 [占用至 t=" + std::to_string(g.until) + ", 等座 " + std::to_string(g.at - g.request.at) + "m]");
-    }
-    if (logs.empty()) {
-        out_ << "    " << style(ansi::dim, "(本分钟无新触发的离散到达/分配事件，各状态计时器平稳推进)") << '\n';
-    } else {
-        const std::size_t limit = 8;
-        for (std::size_t i = 0; i < std::min(logs.size(), limit); ++i) {
-            out_ << "    • " << logs[i] << '\n';
-        }
-        if (logs.size() > limit) {
-            out_ << "    " << style(ansi::dim, "... 以及其余 " + std::to_string(logs.size() - limit) + " 条并发事件") << '\n';
-        }
+    if (!event_details.empty()) {
+        out_ << "\n  " << style(ansi::bold, "本分钟事件明细") << '\n';
+        for (const auto& event : event_details) out_ << "    " << event << '\n';
     }
 }
 
+void ConsoleWorkbench::render_tick_overview(const RecordedRun& run, const TickFrame& frame,
+                                             const std::vector<StudentSnapshot>& students) const {
+    std::map<StudentState, std::size_t> counts;
+    for (const auto& student : students) ++counts[student.state];
+
+    out_ << "  " << style(ansi::bold, "学生");
+    std::size_t index = 0;
+    for (const auto& [state, color] : ordered_student_states) {
+        if (index == 4) out_ << "\n      ";
+        out_ << (index % 4 == 0 ? "  " : " · ") << state_zh(state) << ' '
+             << style(color, std::to_string(counts[state]));
+        ++index;
+    }
+    out_ << '\n';
+
+    struct QueueSummary {
+        std::string name;
+        const char* resource;
+        std::size_t waiting;
+        std::size_t occupied;
+        std::size_t capacity;
+        std::size_t previous_waiting;
+    };
+
+    const auto location_name = [&](const LocationId& id) {
+        const auto it = std::find_if(run.scenario.locations.begin(), run.scenario.locations.end(),
+            [&](const Location& location) { return location.id == id; });
+        return it != run.scenario.locations.end() && !it->name.empty() ? it->name : id;
+    };
+
+    std::map<FacilityId, std::size_t> previous_window_queues;
+    std::map<LocationId, std::size_t> previous_seat_queues;
+    if (frame.at > 0) {
+        const auto& previous = run.frames[static_cast<std::size_t>(frame.at - 1)];
+        for (const auto& item : previous.facilities) previous_window_queues[item.facility_id] = item.queue_length;
+        for (const auto& item : previous.seats) previous_seat_queues[item.location_id] = item.queued;
+    }
+
+    std::vector<QueueSummary> queues;
+    for (const auto& facility : frame.facilities) {
+        if (facility.queue_length == 0) continue;
+        const auto config = std::find_if(run.scenario.facilities.begin(), run.scenario.facilities.end(),
+            [&](const FacilityConfig& item) { return item.id == facility.facility_id; });
+        const bool has_config = config != run.scenario.facilities.end();
+        queues.push_back({has_config ? location_name(config->location_id) : facility.facility_id,
+                          "窗口", facility.queue_length, facility.in_service,
+                          has_config ? config->window_count : 0, previous_window_queues[facility.facility_id]});
+    }
+    for (const auto& seat : frame.seats) {
+        if (seat.queued == 0) continue;
+        queues.push_back({location_name(seat.location_id), "座位", seat.queued,
+                          seat.occupied, seat.capacity, previous_seat_queues[seat.location_id]});
+    }
+
+    std::stable_sort(queues.begin(), queues.end(), [](const QueueSummary& left, const QueueSummary& right) {
+        return left.waiting > right.waiting;
+    });
+    constexpr std::size_t visible_queues = 2;
+    if (queues.empty()) {
+        out_ << "  " << style(ansi::bold, "拥堵") << "  无人排队或等座\n";
+    }
+    for (std::size_t i = 0; i < std::min(visible_queues, queues.size()); ++i) {
+        const auto& queue = queues[i];
+        out_ << (i == 0 ? "  " + style(ansi::bold, "拥堵") + "  " : "        ")
+             << queue.name << "  " << queue.resource << ' ' << queue.occupied << '/' << queue.capacity
+             << " · " << style(ansi::bright_yellow, std::to_string(queue.waiting) + " 人等待");
+        if (frame.at > 0 && queue.waiting != queue.previous_waiting) {
+            const auto delta = static_cast<std::int64_t>(queue.waiting) -
+                               static_cast<std::int64_t>(queue.previous_waiting);
+            out_ << "（较上分钟 " << (delta > 0 ? "+" : "") << delta << "）";
+        }
+        out_ << '\n';
+    }
+    if (queues.size() > visible_queues) {
+        out_ << "        另有 " << queues.size() - visible_queues << " 个队列有人等待\n";
+    }
+}
+
+void ConsoleWorkbench::render_tick_details(const RecordedRun& run, const TickFrame& frame,
+                                            const std::vector<StudentSnapshot>& students, PlaybackView view,
+                                           const StudentId& selected_student) const {
+    const SimTime tick = frame.at;
+
+    // Pre-index student specs, facility configs, location names, and historical events up to `tick`
+    std::map<StudentId, const StudentSpec*> spec_by_id;
+    for (const auto& sp : run.population) spec_by_id[sp.id] = &sp;
+
+    std::map<FacilityId, const FacilityConfig*> fac_cfg;
+    for (const auto& fc : run.scenario.facilities) fac_cfg[fc.id] = &fc;
+
+    std::map<LocationId, std::string> loc_names;
+    for (const auto& loc : run.scenario.locations) loc_names[loc.id] = loc.name;
+
+    std::map<StudentId, StudentArrival> latest_arrival;
+    std::map<StudentId, ServiceStarted> latest_service_start;
+    std::map<StudentId, ServiceCompleted> latest_service_done;
+    std::map<StudentId, SeatRequest> latest_seat_req;
+    std::map<StudentId, SeatGranted> latest_seat_grant;
+
+    for (SimTime t = 0; t <= tick && static_cast<std::size_t>(t) < run.frames.size(); ++t) {
+        const auto& f = run.frames[static_cast<std::size_t>(t)];
+        for (const auto& a : f.arrivals) latest_arrival[a.student_id] = a;
+        for (const auto& st : f.started) latest_service_start[st.student_id] = st;
+        for (const auto& c : f.completed) latest_service_done[c.student_id] = c;
+        for (const auto& sr : f.seat_requests) latest_seat_req[sr.student_id] = sr;
+        for (const auto& sg : f.seat_grants) latest_seat_grant[sg.request.student_id] = sg;
+    }
+
+    std::map<LocationId, std::size_t> loc_counts;
+    std::map<LocationId, std::map<StudentState, std::vector<StudentId>>> loc_state_students;
+    struct MovingStudentDetail {
+        StudentId id;
+        MoveInfo move;
+    };
+    std::map<std::string, std::vector<MovingStudentDetail>> road_students;
+
+    // Also pre-compute facility active windows & FIFO queue at `tick`, and seat pool occupants & queue at `tick`
+    struct WindowOccupant {
+        StudentId student_id;
+        std::string meal_type;
+        SimTime start_at{0};
+        std::optional<SimTime> end_at;
+        SimTime wait_minutes{0};
+    };
+    std::map<FacilityId, std::map<std::size_t, WindowOccupant>> active_windows;
+    struct QueuedStudentInfo {
+        StudentId student_id;
+        std::string meal_type;
+        SimTime arrived_at{0};
+    };
+    std::map<FacilityId, std::vector<QueuedStudentInfo>> facility_queues;
+
+    struct SeatOccupantInfo {
+        StudentId student_id;
+        StudentState state{StudentState::Eating};
+        SimTime granted_at{0};
+        SimTime until{0};
+    };
+    std::map<LocationId, std::vector<SeatOccupantInfo>> seat_occupants;
+    struct SeatWaiterInfo {
+        StudentId student_id;
+        SimTime requested_at{0};
+        SimTime duration_minutes{0};
+    };
+    std::map<LocationId, std::vector<SeatWaiterInfo>> seat_waiters;
+
+    for (const auto& s : students) {
+        const auto* sp = spec_by_id.count(s.student_id) ? spec_by_id.at(s.student_id) : nullptr;
+        const std::string meal = sp ? sp->meal_type : "standard";
+
+        if (s.location_id) {
+            ++loc_counts[*s.location_id];
+            loc_state_students[*s.location_id][s.state].push_back(s.student_id);
+        } else if (s.move) {
+            const std::string seg = s.move->from + " -> " + s.move->to;
+            road_students[seg].push_back(MovingStudentDetail{s.student_id, *s.move});
+        }
+
+        if (s.state == StudentState::InService) {
+            const auto it = latest_service_start.find(s.student_id);
+            if (it != latest_service_start.end()) {
+                std::optional<SimTime> end_at = it->second.expected_end_at;
+                const std::string mtype = !it->second.meal_type.empty() ? it->second.meal_type : meal;
+                if (!end_at && fac_cfg.count(it->second.facility_id)) {
+                    if (const auto srv = window_service_time(*fac_cfg.at(it->second.facility_id), it->second.window_id, mtype)) {
+                        end_at = it->second.at + *srv;
+                    }
+                }
+                active_windows[it->second.facility_id][it->second.window_id] = WindowOccupant{
+                    s.student_id, mtype, it->second.at, end_at, it->second.wait_minutes
+                };
+            }
+        } else if (s.state == StudentState::Queued) {
+            const auto it = latest_arrival.find(s.student_id);
+            const FacilityId fid = it != latest_arrival.end()
+                ? it->second.facility_id
+                : (s.lunch_facility ? *s.lunch_facility : (sp ? sp->lunch_facility : "?"));
+            const SimTime arr_at = it != latest_arrival.end() ? it->second.at : tick;
+            const std::string mtype = it != latest_arrival.end() ? it->second.meal_type : meal;
+            facility_queues[fid].push_back(QueuedStudentInfo{s.student_id, mtype, arr_at});
+        }
+
+        if (s.occupied_seat) {
+            const auto it = latest_seat_grant.find(s.student_id);
+            const SimTime g_at = it != latest_seat_grant.end() ? it->second.at : tick;
+            const SimTime g_until = it != latest_seat_grant.end() ? it->second.until : tick;
+            seat_occupants[*s.occupied_seat].push_back(SeatOccupantInfo{s.student_id, s.state, g_at, g_until});
+        } else if (s.state == StudentState::WaitingSeat && s.location_id) {
+            const auto it = latest_seat_req.find(s.student_id);
+            const SimTime req_at = it != latest_seat_req.end() ? it->second.at : tick;
+            const SimTime dur = it != latest_seat_req.end() ? it->second.duration_minutes : (sp ? sp->meal_minutes : 5);
+            seat_waiters[*s.location_id].push_back(SeatWaiterInfo{s.student_id, req_at, dur});
+        }
+
+    }
+
+    for (auto& [fid, q] : facility_queues) {
+        std::sort(q.begin(), q.end(), [](const QueuedStudentInfo& a, const QueuedStudentInfo& b) {
+            return a.arrived_at != b.arrived_at ? a.arrived_at < b.arrived_at : a.student_id < b.student_id;
+        });
+    }
+    for (auto& [lid, q] : seat_waiters) {
+        std::sort(q.begin(), q.end(), [](const SeatWaiterInfo& a, const SeatWaiterInfo& b) {
+            return a.requested_at != b.requested_at ? a.requested_at < b.requested_at : a.student_id < b.student_id;
+        });
+    }
+
+    if (view == PlaybackView::Scene) {
+        out_ << '\n' << "  " << style(ansi::bold_cyan, "场景明细") << '\n';
+        // Facility Windows & Complete Queues
+        std::map<FacilityId, std::size_t> win_cap;
+        for (const auto& fc : run.scenario.facilities) win_cap[fc.id] = fc.window_count;
+
+        out_ << "\n  " << style(ansi::bold, "食堂窗口与排队") << '\n';
+        for (const auto& f : frame.facilities) {
+            const auto cap = win_cap[f.facility_id];
+            const double ratio = cap > 0 ? static_cast<double>(f.in_service) / static_cast<double>(cap) : 0.0;
+            const std::string q_bar(std::min<std::size_t>(f.queue_length, 20), '|');
+            out_ << "    " << style(ansi::bold_white, pad_right(f.facility_id, 10))
+                 << " 窗口 " << make_bar(ratio, 8, color_, ansi::magenta) << " "
+                 << f.in_service << "/" << cap
+                 << " | 队列: " << pad_right(style(ansi::bright_yellow, q_bar) + (f.queue_length > 20 ? "+" : ""), 22)
+                 << " (" << pad_left(std::to_string(f.queue_length), 2) << "人, 峰值" << pad_left(std::to_string(f.max_queue_length), 2) << ")"
+                 << " | 到达:" << pad_left(std::to_string(f.arrived), 2)
+                 << " 开始:" << pad_left(std::to_string(f.started), 2)
+                 << " 完成:" << pad_left(std::to_string(f.completed), 2) << '\n';
+
+            // Per-window live service status
+            std::vector<std::string> win_tokens;
+            const auto& win_map = active_windows[f.facility_id];
+            for (std::size_t w = 0; w < std::min<std::size_t>(cap, 12); ++w) {
+                const auto wit = win_map.find(w);
+                if (wit != win_map.end()) {
+                    const auto& occ = wit->second;
+                    std::string token = "#W" + std::to_string(w) + ":" +
+                        style(ansi::magenta, occ.student_id + "[" + occ.meal_type + ",t=" + std::to_string(occ.start_at) +
+                              ".." + (occ.end_at ? std::to_string(*occ.end_at) : "?") + "m]");
+                    win_tokens.push_back(token);
+                } else {
+                    win_tokens.push_back("#W" + std::to_string(w) + ":" + style(ansi::dim, "[空闲]"));
+                }
+            }
+            if (cap > 12) win_tokens.push_back("另有 " + std::to_string(cap - 12) + " 个窗口");
+            print_wrapped_tokens(out_, "      ├─ 窗口预览: ", "      │            ", win_tokens, "  ");
+
+            // Queue preview
+            const auto& q_list = facility_queues[f.facility_id];
+            if (q_list.empty()) {
+                out_ << "      └─ 排队序列: " << style(ansi::dim, "(当前无排队等待人员)") << '\n';
+            } else {
+                std::vector<std::string> q_tokens;
+                q_tokens.reserve(q_list.size());
+                for (std::size_t qi = 0; qi < std::min<std::size_t>(q_list.size(), 8); ++qi) {
+                    const auto& qs = q_list[qi];
+                    q_tokens.push_back(std::to_string(qi + 1) + "." + qs.student_id + "(" + qs.meal_type +
+                                       ",t=" + std::to_string(qs.arrived_at) + "到,已等" + std::to_string(tick - qs.arrived_at) + "m)");
+                }
+                print_wrapped_tokens(out_, "      └─ 排队序列(" + std::to_string(q_list.size()) + "人): ",
+                                     "         ", q_tokens, " -> ");
+            }
+        }
+
+        // 3. Finite seat pools and current queue previews
+        if (!frame.seats.empty()) {
+            out_ << "\n  " << style(ansi::bold, "座位占用与排队") << '\n';
+            for (const auto& s : frame.seats) {
+                const double ratio = s.capacity > 0 ? static_cast<double>(s.occupied) / static_cast<double>(s.capacity) : 0.0;
+                const std::string q_bar(std::min<std::size_t>(s.queued, 16), '!');
+                out_ << "    " << style(ansi::bold_white, pad_right(s.location_id, 12))
+                     << " 占座 " << make_bar(ratio, 8, color_, ansi::bright_green) << " "
+                     << s.occupied << "/" << s.capacity
+                     << " | 等座: " << pad_right(style(ansi::bright_red, q_bar), 17)
+                     << " (" << pad_left(std::to_string(s.queued), 2) << "人, 峰值" << pad_left(std::to_string(s.max_queue), 2) << ")"
+                     << " | 累计请求:" << pad_left(std::to_string(s.arrived), 2)
+                     << " 已入座:" << pad_left(std::to_string(s.granted), 2)
+                     << " 已释座:" << pad_left(std::to_string(s.released), 2) << '\n';
+
+                const auto& occ_list = seat_occupants[s.location_id];
+                if (occ_list.empty()) {
+                    out_ << "      ├─ 当前占座: " << style(ansi::dim, "(无人在座)") << '\n';
+                } else {
+                    std::vector<std::string> occ_tokens;
+                    for (std::size_t i = 0; i < std::min<std::size_t>(occ_list.size(), 8); ++i) {
+                        const auto& o = occ_list[i];
+                        occ_tokens.push_back(o.student_id + "[" + (o.state == StudentState::Eating ? "就餐" : "自习") +
+                                             ",t=" + std::to_string(o.granted_at) + ".." + std::to_string(o.until) + "m]");
+                    }
+                    print_wrapped_tokens(out_, "      ├─ 当前占座(" + std::to_string(occ_list.size()) + "人): ",
+                                         "      │            ", occ_tokens, ", ");
+                }
+
+                const auto& wait_list = seat_waiters[s.location_id];
+                if (wait_list.empty()) {
+                    out_ << "      └─ 等座队列: " << style(ansi::dim, "(当前无人排队等座)") << '\n';
+                } else {
+                    std::vector<std::string> w_tokens;
+                    for (std::size_t wi = 0; wi < std::min<std::size_t>(wait_list.size(), 8); ++wi) {
+                        const auto& ws = wait_list[wi];
+                        w_tokens.push_back(std::to_string(wi + 1) + "." + ws.student_id +
+                                           "(已等" + std::to_string(tick - ws.requested_at) + "m,需" + std::to_string(ws.duration_minutes) + "m)");
+                    }
+                    print_wrapped_tokens(out_, "      └─ 等座队列(" + std::to_string(wait_list.size()) + "人): ",
+                                         "         ", w_tokens, " -> ");
+                }
+            }
+        }
+
+        // 4. Campus location counts and a preview of movement by route.
+        out_ << "\n  " << style(ansi::bold, "地点与在途") << '\n';
+        std::vector<std::pair<LocationId, std::size_t>> sorted_locs(loc_counts.begin(), loc_counts.end());
+        std::sort(sorted_locs.begin(), sorted_locs.end(), [](const auto& a, const auto& b) {
+            return a.second != b.second ? a.second > b.second : a.first < b.first;
+        });
+        if (sorted_locs.empty()) {
+            out_ << "    驻留地点: 当前全体学生均在步行途中\n";
+        } else {
+            for (const auto& [lid, cnt] : sorted_locs) {
+                const std::string lname = loc_names.count(lid) ? ("(" + loc_names.at(lid) + ")") : "";
+                std::vector<std::string> state_parts;
+                for (const auto& [st, col] : ordered_student_states) {
+                    const auto& ids = loc_state_students[lid][st];
+                    if (ids.empty()) continue;
+                    std::ostringstream oss;
+                    oss << style(col, std::string(state_zh(st)) + std::to_string(ids.size()) + "人") << "[";
+                    for (std::size_t i = 0; i < std::min<std::size_t>(ids.size(), 8); ++i) {
+                        if (i > 0) oss << ",";
+                        oss << ids[i];
+                    }
+                    if (ids.size() > 8) oss << ",…";
+                    oss << "]";
+                    state_parts.push_back(oss.str());
+                }
+                const std::string prefix = "    • 驻留 " + style(ansi::bold_white, pad_right(lid + lname, 22)) +
+                                           " 共 " + pad_left(std::to_string(cnt), 2) + "人 : ";
+                print_wrapped_tokens(out_, prefix, "           ", state_parts, " | ");
+            }
+        }
+        std::vector<std::string> empty_locs;
+        for (const auto& loc : run.scenario.locations) {
+            if (loc_counts.count(loc.id) == 0) empty_locs.push_back(loc.id + "(0)");
+        }
+        if (!empty_locs.empty()) {
+            print_wrapped_tokens(out_, "    • 空置地点: ", "                ", empty_locs, ", ");
+        }
+
+        if (road_students.empty()) {
+            out_ << "    • 在途路段: " << style(ansi::dim, "当前分钟无人步行移动") << '\n';
+        } else {
+            for (const auto& [seg, movers] : road_students) {
+                std::vector<std::string> mover_tokens;
+                mover_tokens.reserve(movers.size());
+                for (std::size_t i = 0; i < std::min<std::size_t>(movers.size(), 8); ++i) {
+                    const auto& m = movers[i];
+                    mover_tokens.push_back(m.id + "(t=" + std::to_string(m.move.depart_at) + "->" +
+                                           std::to_string(m.move.arrive_at) + "m," +
+                                           format_fixed(m.move.distance_m, 0) + "m,剩" +
+                                           std::to_string(std::max<SimTime>(0, m.move.arrive_at - tick)) + "m)");
+                }
+                const std::string prefix = "    • 在途 " + style(ansi::bright_cyan, pad_right(seg, 22)) +
+                                           " 共 " + pad_left(std::to_string(movers.size()), 2) + "人 : ";
+                print_wrapped_tokens(out_, prefix, "           ", mover_tokens, ", ");
+            }
+        }
+        return;
+    }
+
+    out_ << "\n  " << style(ansi::bold_cyan, "学生明细")
+         << (selected_student.empty() ? (students.size() <= 24 ? " · 全员" : " · 预览") : " · " + selected_student) << '\n';
+    out_ << "    " << pad_right("学号", 8) << pad_right("当前状态", 10)
+         << pad_right("当前位置或去向", 24) << "当前进度\n";
+
+    // Map queue rank for quick lookup
+    std::map<StudentId, std::pair<FacilityId, std::size_t>> fac_queue_rank;
+    for (const auto& [fid, q] : facility_queues) {
+        for (std::size_t i = 0; i < q.size(); ++i) fac_queue_rank[q[i].student_id] = {fid, i + 1};
+    }
+    std::map<StudentId, std::pair<LocationId, std::size_t>> seat_queue_rank;
+    for (const auto& [lid, q] : seat_waiters) {
+        for (std::size_t i = 0; i < q.size(); ++i) seat_queue_rank[q[i].student_id] = {lid, i + 1};
+    }
+
+    bool found = false;
+    std::size_t displayed = 0;
+    for (const auto& s : students) {
+        if (selected_student.empty() && displayed++ == 24) {
+            out_ << "    仅预览前 24 人。使用 v 学号查看任意学生。\n";
+            break;
+        }
+        if (!selected_student.empty() && s.student_id != selected_student) continue;
+        found = true;
+        const auto* sp = spec_by_id.count(s.student_id) ? spec_by_id.at(s.student_id) : nullptr;
+        const std::string pol_short = !sp ? "?" :
+            (sp->lunch_policy == LunchPolicy::Fixed ? "fixed" :
+             sp->lunch_policy == LunchPolicy::Nearest ? "nearest" : "fastest");
+        const std::string fac_choice = s.lunch_facility.value_or(sp ? sp->lunch_facility : "-");
+        const std::string meal_str = sp ? sp->meal_type : "standard";
+        const std::string food_cfg = fac_choice + "·" + meal_str + "·" + pol_short;
+
+        std::string pos_str = s.location_id ? ("@ " + *s.location_id)
+                                            : (s.move ? (s.move->from + " -> " + s.move->to) : "-");
+
+        const char* st_color = ansi::dim;
+        switch (s.state) {
+        case StudentState::AtLocation: st_color = ansi::dim; break;
+        case StudentState::Moving: st_color = ansi::bright_cyan; break;
+        case StudentState::Queued: st_color = ansi::bright_yellow; break;
+        case StudentState::InService: st_color = ansi::magenta; break;
+        case StudentState::WaitingSeat: st_color = ansi::bright_red; break;
+        case StudentState::Eating: st_color = ansi::bright_green; break;
+        case StudentState::InActivity: st_color = ansi::cyan; break;
+        case StudentState::Finished: st_color = ansi::green; break;
+        }
+
+        std::string detail;
+        if (s.state == StudentState::Moving && s.move) {
+            detail = "步行移动 [t=" + std::to_string(s.move->depart_at) + "->" + std::to_string(s.move->arrive_at) +
+                     "m, 距离" + format_fixed(s.move->distance_m, 0) + "m, 剩" +
+                     std::to_string(std::max<SimTime>(0, s.move->arrive_at - tick)) + "m]";
+        } else if (s.state == StudentState::Queued) {
+            const auto qit = fac_queue_rank.find(s.student_id);
+            const auto ait = latest_arrival.find(s.student_id);
+            const SimTime arr_t = ait != latest_arrival.end() ? ait->second.at : tick;
+            detail = "在 " + (qit != fac_queue_rank.end() ? qit->second.first : fac_choice) +
+                     " 排队第 " + (qit != fac_queue_rank.end() ? std::to_string(qit->second.second) : "?") +
+                     " 位 [t=" + std::to_string(arr_t) + "m到达, 已等" + std::to_string(tick - arr_t) + "m]";
+        } else if (s.state == StudentState::InService) {
+            const auto sit = latest_service_start.find(s.student_id);
+            if (sit != latest_service_start.end()) {
+                std::optional<SimTime> end_at = sit->second.expected_end_at;
+                if (!end_at && fac_cfg.count(sit->second.facility_id)) {
+                    end_at = window_service_time(*fac_cfg.at(sit->second.facility_id), sit->second.window_id, meal_str);
+                    if (end_at) *end_at += sit->second.at;
+                }
+                detail = "占用窗口 " + sit->second.facility_id + "#W" + std::to_string(sit->second.window_id) +
+                         " [t=" + std::to_string(sit->second.at) + ".." + (end_at ? std::to_string(*end_at) : "?") +
+                         "m, 曾排" + std::to_string(sit->second.wait_minutes) + "m]";
+            }
+        } else if (s.state == StudentState::WaitingSeat) {
+            const auto sqit = seat_queue_rank.find(s.student_id);
+            const auto srit = latest_seat_req.find(s.student_id);
+            const SimTime req_t = srit != latest_seat_req.end() ? srit->second.at : tick;
+            const SimTime dur_t = srit != latest_seat_req.end() ? srit->second.duration_minutes : 0;
+            detail = "等座 " + s.location_id.value_or("?") + " 第 " +
+                     (sqit != seat_queue_rank.end() ? std::to_string(sqit->second.second) : "?") +
+                     " 位 [t=" + std::to_string(req_t) + "m申请, 已等" + std::to_string(tick - req_t) +
+                     "m, 需" + std::to_string(dur_t) + "m]";
+        } else if (s.state == StudentState::Eating) {
+            if (s.occupied_seat) {
+                const auto sgit = latest_seat_grant.find(s.student_id);
+                if (sgit != latest_seat_grant.end()) {
+                    detail = "占座就餐 @" + *s.occupied_seat + " [t=" + std::to_string(sgit->second.at) +
+                             ".." + std::to_string(sgit->second.until) + "m, 剩" +
+                             std::to_string(std::max<SimTime>(0, sgit->second.until - tick)) + "m]";
+                }
+            } else {
+                const auto cit = latest_service_done.find(s.student_id);
+                const SimTime start_e = cit != latest_service_done.end() ? cit->second.at : tick;
+                const SimTime end_e = start_e + (sp ? sp->meal_minutes : 5);
+                detail = "食堂就餐 @" + s.location_id.value_or("?") + " [t=" + std::to_string(start_e) +
+                         ".." + std::to_string(end_e) + "m, 剩" + std::to_string(std::max<SimTime>(0, end_e - tick)) + "m]";
+            }
+        } else if (s.state == StudentState::InActivity) {
+            for (const auto& r : run.activities) {
+                if (r.student_id == s.student_id && r.started_at && *r.started_at <= tick &&
+                    (!r.completed_at || tick < *r.completed_at)) {
+                    const SimTime delay = *r.started_at - r.activity.start_minute;
+                    detail = std::string(activity_zh(r.activity.kind)) + ":" + r.activity.id +
+                             " [t=" + std::to_string(*r.started_at) + ".." +
+                             (r.completed_at ? std::to_string(*r.completed_at) : "?") + "m, " +
+                             (delay > 0 ? ("迟到+" + std::to_string(delay) + "m") : "准点") + "]";
+                    break;
+                }
+            }
+            if (detail.empty()) detail = "执行日程活动 @" + s.location_id.value_or("?");
+        } else if (s.state == StudentState::AtLocation) {
+            detail = "等待下一项日程";
+        } else if (s.state == StudentState::Finished) {
+            detail = "全部日程已完成";
+        }
+
+        out_ << "    " << pad_right(s.student_id, 8) << ' '
+             << pad_right(style(st_color, state_zh(s.state)), 9) << ' '
+             << pad_right(pos_str, 23) << ' ' << detail << '\n';
+        if (!selected_student.empty()) out_ << "    午餐配置  " << food_cfg << '\n';
+    }
+    if (!found && !selected_student.empty()) {
+        out_ << "    " << style(ansi::yellow, "未找到学生 " + selected_student) << '\n';
+    }
+}
+
+std::vector<std::string> ConsoleWorkbench::render_tick_event_summary(const RecordedRun& run, const TickFrame& frame,
+                                                                    const std::vector<StudentSnapshot>& students,
+                                                                    bool include_details) const {
+    const SimTime tick = frame.at;
+    std::size_t decisions = 0, departures = 0, arrivals = 0, service_starts = 0, meals_served = 0;
+    std::size_t seat_requests = 0, seat_grants = 0, activity_starts = 0, activity_ends = 0, finished = 0;
+    std::vector<std::string> logs;
+    const auto record = [&](std::size_t& count, const auto& describe) {
+        ++count;
+        if (include_details) logs.push_back(describe());
+    };
+
+    for (const auto& event : frame.completed) {
+        record(meals_served, [&] {
+            return style(ansi::green, "[出餐] ") + event.student_id + " 在 " + event.facility_id +
+                   "#W" + std::to_string(event.window_id) + " 完成取餐，释放窗口";
+        });
+    }
+    for (const auto& decision : frame.decisions) {
+        if (!decision.selected) continue;
+        record(decisions, [&] {
+            std::string detail = decision.student_id + " 按 " + policy_text(decision.policy) +
+                                 " 选定 " + decision.facility_id;
+            if (decision.distance_m && decision.travel_minutes) {
+                detail += "（路程 " + format_fixed(*decision.distance_m, 0) + " 米，步行 " +
+                          std::to_string(*decision.travel_minutes) + " 分钟";
+                if (decision.estimated_wait_minutes) {
+                    detail += "，预计等窗 " + std::to_string(*decision.estimated_wait_minutes) + " 分钟";
+                }
+                if (decision.service_minutes) detail += "，取餐 " + std::to_string(*decision.service_minutes) + " 分钟";
+                if (decision.estimated_total_minutes) {
+                    detail += "，预计共 " + std::to_string(*decision.estimated_total_minutes) + " 分钟";
+                }
+                detail += "）";
+            }
+            return style(ansi::bright_cyan, "[决策] ") + detail;
+        });
+    }
+    for (const auto& student : students) {
+        if (student.state != StudentState::Moving || !student.move || student.move->depart_at != tick) continue;
+        record(departures, [&] {
+            return style(ansi::cyan, "[出发] ") + student.student_id + " 从 " + student.move->from +
+                   " 前往 " + student.move->to + "（" + format_fixed(student.move->distance_m, 0) +
+                   " 米，预计第 " + std::to_string(student.move->arrive_at) + " 分钟抵达）";
+        });
+    }
+    for (const auto& event : frame.arrivals) {
+        record(arrivals, [&] {
+            return style(ansi::yellow, "[到达] ") + event.student_id + " 到达 " + event.facility_id +
+                   " 并入队（" + event.meal_type + "）";
+        });
+    }
+    for (const auto& event : frame.started) {
+        record(service_starts, [&] {
+            const std::string end = event.expected_end_at
+                ? "，预计第 " + std::to_string(*event.expected_end_at) + " 分钟出餐" : "";
+            return style(ansi::magenta, "[取餐] ") + event.student_id + " 进入 " + event.facility_id +
+                   "#W" + std::to_string(event.window_id) + "（已排队 " +
+                   std::to_string(event.wait_minutes) + " 分钟" + end + "）";
+        });
+    }
+    for (const auto& event : frame.seat_requests) {
+        record(seat_requests, [&] {
+            return style(ansi::bright_yellow, "[申座] ") + event.student_id + " 在 " + event.location_id +
+                   " 申请座位（计划占用 " + std::to_string(event.duration_minutes) + " 分钟）";
+        });
+    }
+    for (const auto& event : frame.seat_grants) {
+        record(seat_grants, [&] {
+            return style(ansi::bright_green, "[入座] ") + event.request.student_id + " 在 " +
+                   event.request.location_id + " 入座（占用至第 " + std::to_string(event.until) +
+                   " 分钟，已等座 " + std::to_string(event.at - event.request.at) + " 分钟）";
+        });
+    }
+    for (const auto& activity : run.activities) {
+        if (activity.started_at == tick && activity.activity.kind != ActivityKind::Lunch) {
+            record(activity_starts, [&] {
+                const SimTime delay = tick - activity.activity.start_minute;
+                return style(ansi::cyan, "[开始活动] ") + activity.student_id + " 开始 " +
+                       activity_zh(activity.activity.kind) + "（" + activity.activity.id + " @" +
+                       activity.destination + "，" + (delay > 0 ? "迟到 " + std::to_string(delay) + " 分钟" : "准点") + "）";
+            });
+        }
+        if (activity.completed_at == tick) {
+            record(activity_ends, [&] {
+                return style(ansi::green, "[完成活动] ") + activity.student_id + " 完成 " +
+                       activity_zh(activity.activity.kind) + "（" + activity.activity.id + " @" +
+                       activity.destination + "）";
+            });
+        }
+    }
+    const auto completed_before = run.finished_students_at(tick - 1);
+    finished = frame.finished_students - completed_before;
+
+    const std::pair<const char*, std::size_t> counts[] = {
+        {"选食堂", decisions}, {"出发", departures}, {"到达食堂", arrivals},
+        {"开始取餐", service_starts}, {"出餐", meals_served}, {"申座", seat_requests}, {"入座", seat_grants},
+        {"开始活动", activity_starts}, {"完成活动", activity_ends}, {"完成日程", finished}
+    };
+    std::vector<std::string> items;
+    for (const auto& [label, count] : counts) {
+        if (count != 0) items.push_back(std::string(label) + ' ' + std::to_string(count));
+    }
+    if (items.empty()) items.push_back("本分钟无新事件");
+    print_wrapped_tokens(out_, "  " + style(ansi::bold, "事件") + "  ", "        ", items, " · ", 78);
+    return logs;
+}
+
 void ConsoleWorkbench::menu_simulation_playback() {
-    const auto t0 = std::chrono::steady_clock::now();
-    cached_run_ = execute_simulation(environment_, population_, settings_.duration_minutes);
-    const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - t0).count();
+    ensure_run_cached();
+    const auto& run = *cached_run_;
+    const auto duration = run.settings.duration_minutes;
+    const auto peak = run.peak_congestion_minute();
+    SimTime cursor = population_.size() > 1000 ? 0 : peak;
+    auto view = PlaybackView::Overview;
+    StudentId selected_student;
 
-    out_ << style(ansi::bright_green, "\n✓ 引擎仿真执行完毕 (耗时 " + std::to_string(elapsed_ms) + " ms，每分钟守恒断言全部通过)") << '\n';
-    print_run_summary(*cached_run_);
+    const auto draw = [&](bool refresh) {
+        if (refresh && color_) out_ << "\x1b[2J\x1b[H";
+        render_tick_dashboard(run, cursor, view, selected_student);
+        out_.flush();
+    };
 
-    SimTime cursor = cached_run_->peak_congestion_minute();
-    out_ << "\n" << style(ansi::bold_cyan, "▸ 进入交互式时间轴播放器 (默认定位至拥堵峰值时刻 t=" + std::to_string(cursor) + ")") << '\n';
-
+    draw(false);
     while (true) {
-        render_tick_dashboard(*cached_run_, cursor, false);
-        out_ << "\n  " << style(ansi::dim, "控制指令: [回车/n]下一分  [b]上一分  [+/-]快进退10分  [k]跳至拥堵峰值  [g 分钟]跳转  [p 步数]动画连播  [s]汇总表  [q]返回") << '\n';
+        const auto scene_hint = view == PlaybackView::Scene ? "[r]收起场景" : "[r]场景";
+        const auto student_hint = view == PlaybackView::Students ? "[v]收起学生" : "[v]学生";
+        out_ << "\n  " << style(ansi::dim, "[回车/n]下一分  [b]上一分  [+/-]跳10分  [g 分钟]跳转  [k]峰值")
+             << "\n  " << style(ansi::dim, std::string(scene_hint) + "  " + student_hint +
+                          "  [v 学号]查学生  [p 步数]按倍率连播  [s]全程汇总  [q]返回") << '\n';
         std::string cmd;
         if (!prompt_line("playback(t=" + std::to_string(cursor) + ")> ", cmd)) break;
         if (cmd == "q" || cmd == "0" || cmd == "quit") break;
-        if (cmd.empty() || cmd == "n") {
-            cursor = std::min<SimTime>(cached_run_->settings.duration_minutes, cursor + 1);
+
+        if (cmd == "r") {
+            view = view == PlaybackView::Scene ? PlaybackView::Overview : PlaybackView::Scene;
+            selected_student.clear();
+            draw(true);
             continue;
         }
-        if (cmd == "b") {
-            cursor = std::max<SimTime>(0, cursor - 1);
-            continue;
-        }
-        if (cmd == "+") {
-            cursor = std::min<SimTime>(cached_run_->settings.duration_minutes, cursor + 10);
-            continue;
-        }
-        if (cmd == "-") {
-            cursor = std::max<SimTime>(0, cursor - 10);
-            continue;
-        }
-        if (cmd == "k") {
-            cursor = cached_run_->peak_congestion_minute();
+        if (cmd == "v" || cmd.rfind("v ", 0) == 0) {
+            view = cmd == "v" && view == PlaybackView::Students ? PlaybackView::Overview : PlaybackView::Students;
+            selected_student = cmd == "v" ? StudentId{} : trim(cmd.substr(2));
+            draw(true);
             continue;
         }
         if (cmd == "s") {
-            print_run_summary(*cached_run_);
+            print_run_summary(run);
             continue;
         }
-        if (cmd[0] == 'p') {
+        if (!cmd.empty() && cmd.front() == 'p') {
             std::istringstream iss(cmd.substr(1));
-            int steps = 25;
-            int delay_ms = 110;
+            int steps = playback_speed_;
+            int delay_ms = 60000 / playback_speed_;
             iss >> steps >> delay_ms;
-            steps = std::max(1, std::min(steps, 300));
-            delay_ms = std::max(0, std::min(delay_ms, 1000));
-            for (int i = 0; i < steps && cursor < cached_run_->settings.duration_minutes; ++i) {
-                ++cursor;
-                render_tick_dashboard(*cached_run_, cursor, true);
-                if (delay_ms > 0 && color_) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms));
+            steps = std::clamp(steps, 1, 300);
+            delay_ms = std::clamp(delay_ms, 0, 60000);
+            view = PlaybackView::Overview;
+            selected_student.clear();
+            if (cursor == duration) draw(true);
+            const auto start = std::chrono::steady_clock::now();
+            for (int i = 0; i < steps && cursor < duration; ++i) {
+                if (delay_ms > 0) {
+                    std::this_thread::sleep_until(start + std::chrono::milliseconds((i + 1) * delay_ms));
                 }
+                ++cursor;
+                draw(true);
             }
             continue;
         }
-        std::string target_str = cmd;
-        if (cmd.rfind("g ", 0) == 0) target_str = cmd.substr(2);
-        SimTime target = 0;
-        if (parse_int(target_str, target) && target >= 0 && target <= cached_run_->settings.duration_minutes) {
-            cursor = target;
+
+        if (cmd.empty() || cmd == "n") {
+            cursor += std::min<SimTime>(duration - cursor, 1);
+        } else if (cmd == "b") {
+            cursor = std::max<SimTime>(0, cursor - 1);
+        } else if (cmd == "+") {
+            cursor += std::min<SimTime>(duration - cursor, 10);
+        } else if (cmd == "-") {
+            cursor = std::max<SimTime>(0, cursor - 10);
+        } else if (cmd == "k") {
+            cursor = peak;
         } else {
-            out_ << style(ansi::red, "无法识别的播放指令，请输入 n / b / + / - / k / p / s / q 或 0.." +
-                                     std::to_string(cached_run_->settings.duration_minutes) + " 的分钟数。\n");
+            const std::string target_str = cmd.rfind("g ", 0) == 0 ? trim(cmd.substr(2)) : cmd;
+            SimTime target = 0;
+            if (!parse_int(target_str, target) || target < 0 || target > duration) {
+                out_ << style(ansi::red, "无法识别的回放指令。请输入上方指令或使用 g 跳转至指定分钟。\n");
+                continue;
+            }
+            cursor = target;
         }
+        view = PlaybackView::Overview;
+        selected_student.clear();
+        draw(true);
     }
 }
 
@@ -1133,17 +1751,17 @@ void ConsoleWorkbench::menu_student_inspector() {
     ensure_run_cached();
     const auto& run = *cached_run_;
 
-    out_ << "\n" << style(ansi::bold_cyan, "─── [3] 学生个体全生命周期轨迹、选食堂决策与日程透视 ───") << '\n';
+    out_ << "\n" << style(ansi::bold_cyan, "─── [3] 学生个体全生命周期轨迹、选食堂决策与日程透视 (全员名册共 " +
+                          std::to_string(run.population.size()) + " 人) ───") << '\n';
     out_ << "  " << pad_right("学号", 8) << pad_right("初始地点", 12) << pad_right("餐品需求", 10)
-         << pad_right("策略", 10) << pad_right("步速(m/m)", 11) << pad_right("选定食堂", 10) << "状态概览\n";
+         << pad_right("策略", 10) << pad_right("步速(m/m)", 11) << pad_right("选定食堂", 10) << "结束状态\n";
     out_ << "  " << std::string(80, '-') << '\n';
 
-    const auto& final_snaps = run.frames.back().students;
+    const auto final_snaps = run.students_at(run.settings.duration_minutes);
     std::map<StudentId, StudentSnapshot> final_by_id;
     for (const auto& s : final_snaps) final_by_id[s.student_id] = s;
 
-    const std::size_t preview_count = std::min<std::size_t>(run.population.size(), 12);
-    for (std::size_t i = 0; i < preview_count; ++i) {
+    for (std::size_t i = 0; i < std::min<std::size_t>(run.population.size(), 24); ++i) {
         const auto& sp = run.population[i];
         const auto& fs = final_by_id.at(sp.id);
         const std::string pol = sp.lunch_policy == LunchPolicy::Fixed ? "fixed" :
@@ -1156,11 +1774,10 @@ void ConsoleWorkbench::menu_student_inspector() {
              << pad_right(fs.lunch_facility.value_or(sp.lunch_facility), 10)
              << state_zh(fs.state) << '\n';
     }
-    if (run.population.size() > preview_count) {
-        out_ << "  " << style(ansi::dim, "... 共 " + std::to_string(run.population.size()) + " 名学生 (如 S001 .. " +
-                              run.population.back().id + ")") << '\n';
-    }
 
+    if (run.population.size() > 24)
+        out_ << "  名册预览 24 人，可输入任意学号查看。\n";
+    if (run.population.empty()) return;
     while (true) {
         std::string sid;
         if (!prompt_line("\n输入要透视的学生学号 (回车默认 " + run.population.front().id + "，输入 0 返回)> ", sid)) break;
@@ -1178,7 +1795,7 @@ void ConsoleWorkbench::menu_student_inspector() {
              << " | 起点: " << spec.initial_location
              << " | 步行速度: " << format_fixed(spec.walk_m_per_min, 1) << " m/min"
              << " | 餐品偏好: " << style(ansi::bright_yellow, spec.meal_type)
-             << " | 策略: " << policy_text(spec.lunch_policy) << '\n';
+             << " | 回放 " << playback_speed_ << " 倍 | 策略: " << policy_text(spec.lunch_policy) << '\n';
 
         // 1. Candidate Canteen Decisions
         std::vector<LunchDecision> student_decisions;
@@ -1249,268 +1866,244 @@ void ConsoleWorkbench::menu_student_inspector() {
             }
         }
 
-        // 3. Visual State Strip (sampled to 60 columns)
-        out_ << "\n  " << style(ansi::bold, "3) 状态时间轴色带 (0 .. " + std::to_string(run.settings.duration_minutes) + " min)") << '\n';
-        out_ << "     图例: [.]等待 [>]移动 [Q]排队 [S]取餐 [W]等座 [E]就餐 [A]上课/自习 [_]已完成\n     [";
-        const std::size_t cols = std::min<std::size_t>(64, run.frames.size());
-        for (std::size_t c = 0; c < cols; ++c) {
-            const std::size_t f_idx = (c * (run.frames.size() - 1)) / std::max<std::size_t>(1, cols - 1);
-            const auto& snaps = run.frames[f_idx].students;
-            const auto it = std::find_if(snaps.begin(), snaps.end(), [&](const StudentSnapshot& s) {
-                return s.student_id == sid;
-            });
-            if (it == snaps.end()) {
-                out_ << ' ';
-                continue;
-            }
-            switch (it->state) {
-            case StudentState::AtLocation: out_ << style(ansi::dim, "."); break;
-            case StudentState::Moving: out_ << style(ansi::bright_cyan, ">"); break;
-            case StudentState::Queued: out_ << style(ansi::bright_yellow, "Q"); break;
-            case StudentState::InService: out_ << style(ansi::magenta, "S"); break;
-            case StudentState::WaitingSeat: out_ << style(ansi::bright_red, "W"); break;
-            case StudentState::Eating: out_ << style(ansi::bright_green, "E"); break;
-            case StudentState::InActivity: out_ << style(ansi::cyan, "A"); break;
-            case StudentState::Finished: out_ << style(ansi::green, "_"); break;
-            }
+        // 3. 1:1 Minute-by-Minute Full-Resolution Visual State Strip (60 min per row)
+        out_ << "\n  " << style(ansi::bold, "3) 逐分钟 1:1 全分辨率状态时间轴 (0 .. " + std::to_string(run.settings.duration_minutes) + " min)") << '\n';
+        out_ << "     图例: [.]等待 [>]移动 [Q]排队 [S]取餐 [W]等座 [E]就餐 [A]上课/自习 [_]已完成\n";
+
+        std::vector<StudentSnapshot> timeline;
+        timeline.reserve(run.frames.size());
+        for (const auto& f : run.frames) {
+            if (auto snapshot = run.student_at(sid, f.at)) timeline.push_back(std::move(*snapshot));
         }
-        out_ << "]\n";
-    }
-}
 
-void ConsoleWorkbench::menu_experiments() {
-    out_ << "\n" << style(ansi::bold_cyan, "─── [4] 控制变量对照实验中心 (内存直接驱动真实 C++ 引擎) ───") << '\n'
-         << "  " << style(ansi::bold_white, "[1] ") << "阶段一实验：选食堂策略对照 (fixed vs nearest vs fastest · 60人动态场景)\n"
-         << "  " << style(ansi::bold_white, "[2] ") << "阶段二实验：异质窗口分工对照 (专用窗口 Dedicated vs 通用窗口 Flexible · 60人3食堂)\n"
-         << "  " << style(ansi::bold_white, "[3] ") << "阶段三实验：全天日程瓶颈与封路对照 (基准 / 食堂座位×2 / 图书馆座位×2 / 封3条路)\n"
-         << "  " << style(ansi::bold_white, "[4] ") << "基础敏感性：窗口扩容与步速翻倍对照 (基准 / 近食堂+1窗口 / 全员步速×2 · 40人双食堂)\n"
-         << "  " << style(ansi::dim, "[0] 返回主菜单") << '\n';
-
-    std::string input;
-    if (!prompt_line("选择要运行的对照实验 [0-4]> ", input) || input.empty() || input == "0") return;
-    if (input == "1") run_experiment_policies();
-    else if (input == "2") run_experiment_heterogeneous_windows();
-    else if (input == "3") run_experiment_schedule_bottlenecks();
-    else if (input == "4") run_experiment_lunch_sensitivity();
-    else out_ << style(ansi::red, "无效实验编号。\n");
-}
-
-void ConsoleWorkbench::run_experiment_policies() {
-    CampusEnvironment env;
-    env.load_directory(root_ / "data/scenarios/dynamic_campus");
-    const auto base_pop = read_student_specs(root_ / "data/students/dynamic_campus.csv");
-
-    struct Row {
-        std::string name;
-        std::size_t completed{0};
-        std::size_t max_q{0};
-        std::int64_t total_wait{0};
-        double mean_wait{0.0};
-        std::map<FacilityId, std::size_t> split;
-    };
-    std::vector<Row> rows;
-    std::int64_t max_wait_seen = 1;
-
-    for (const auto& [pol, label] : std::vector<std::pair<LunchPolicy, std::string>>{
-             {LunchPolicy::Fixed, "fixed (预设固定)"},
-             {LunchPolicy::Nearest, "nearest (唯距离最近)"},
-             {LunchPolicy::Fastest, "fastest (拥堵感知最快)"}}) {
-        auto pop = base_pop;
-        for (auto& s : pop) s.lunch_policy = pol;
-        const auto run = execute_simulation(env, pop, 120);
-        Row r;
-        r.name = label;
-        std::size_t started_sum = 0;
-        for (const auto& f : run.summaries) {
-            r.completed += f.completed;
-            r.max_q = std::max(r.max_q, f.max_queue_length);
-            r.total_wait += f.total_wait_minutes;
-            started_sum += f.started;
-            r.split[f.facility_id] = f.arrived;
+        const std::size_t row_span = 60;
+        for (std::size_t base = 0; base < timeline.size(); base += row_span) {
+            const std::size_t end_idx = std::min(timeline.size(), base + row_span);
+            out_ << "     t=" << pad_left(std::to_string(base), 3) << ".."
+                 << pad_right(std::to_string(end_idx - 1) + "m", 4) << " [";
+            for (std::size_t t = base; t < end_idx; ++t) {
+                switch (timeline[t].state) {
+                case StudentState::AtLocation: out_ << style(ansi::dim, "."); break;
+                case StudentState::Moving: out_ << style(ansi::bright_cyan, ">"); break;
+                case StudentState::Queued: out_ << style(ansi::bright_yellow, "Q"); break;
+                case StudentState::InService: out_ << style(ansi::magenta, "S"); break;
+                case StudentState::WaitingSeat: out_ << style(ansi::bright_red, "W"); break;
+                case StudentState::Eating: out_ << style(ansi::bright_green, "E"); break;
+                case StudentState::InActivity: out_ << style(ansi::cyan, "A"); break;
+                case StudentState::Finished: out_ << style(ansi::green, "_"); break;
+                }
+            }
+            out_ << "]\n";
         }
-        r.mean_wait = started_sum ? static_cast<double>(r.total_wait) / static_cast<double>(started_sum) : 0.0;
-        max_wait_seen = std::max(max_wait_seen, r.total_wait);
-        rows.push_back(std::move(r));
-    }
 
-    out_ << "\n" << style(ansi::bold_green, "★ 实验一结果：三种选食堂策略对照 (dynamic_campus, 60人, 120分钟)") << '\n';
-    out_ << "  " << pad_right("策略方案", 24) << pad_left("完成取餐", 10) << pad_left("单食堂峰值队列", 16)
-         << pad_left("总等待(m)", 11) << pad_left("平均等待", 10) << "  食堂分流 (F_NEAR : F_FAR) & 等待对比\n";
-    out_ << "  " << std::string(96, '-') << '\n';
-    for (const auto& r : rows) {
-        const double ratio = static_cast<double>(r.total_wait) / static_cast<double>(max_wait_seen);
-        const auto near_cnt = r.split.count("F_NEAR") ? r.split.at("F_NEAR") : 0;
-        const auto far_cnt = r.split.count("F_FAR") ? r.split.at("F_FAR") : 0;
-        out_ << "  " << pad_right(r.name, 24)
-             << pad_left(std::to_string(r.completed) + "/60", 10)
-             << pad_left(std::to_string(r.max_q), 16)
-             << pad_left(std::to_string(r.total_wait), 11)
-             << pad_left(format_fixed(r.mean_wait, 2) + "m", 10)
-             << "  " << pad_right(std::to_string(near_cnt) + " : " + std::to_string(far_cnt), 9)
-             << make_bar(ratio, 14, color_, ansi::bright_yellow) << '\n';
-    }
-    out_ << "  " << style(ansi::bright_cyan, "结论洞察: nearest 使近距离食堂严重拥堵；fastest 利用 t-1 冻结队列快照主动将后续学生分流至远食堂，显著削峰降等。") << '\n';
-}
-
-void ConsoleWorkbench::run_experiment_heterogeneous_windows() {
-    CampusEnvironment env_ded;
-    env_ded.load_directory(root_ / "data/scenarios/service_campus");
-    const auto pop = read_student_specs(root_ / "data/students/service_campus.csv");
-
-    auto sc_flex = env_ded.scenario();
-    const std::vector<std::pair<std::string, SimTime>> meals{{"rice", 2}, {"noodle", 3}, {"stirfry", 5}};
-    for (auto& fac : sc_flex.facilities) {
-        fac.window_services.clear();
-        for (std::size_t w = 0; w < fac.window_count; ++w) {
-            for (const auto& [m, dur] : meals) {
-                fac.window_services.push_back({w, m, dur});
+        // 4. Complete Contiguous State Intervals Breakdown
+        if (!timeline.empty()) {
+            out_ << "\n  " << style(ansi::bold, "4) 全生命周期连续状态区间分解表 (每一分钟状态去向全记录)") << '\n';
+            std::size_t seg_start = 0;
+            const auto same_segment = [](const StudentSnapshot& a, const StudentSnapshot& b) {
+                if (a.state != b.state || a.location_id != b.location_id || a.occupied_seat != b.occupied_seat) return false;
+                if (a.move.has_value() != b.move.has_value()) return false;
+                if (a.move && (a.move->from != b.move->from || a.move->to != b.move->to || a.move->depart_at != b.move->depart_at)) return false;
+                return true;
+            };
+            for (std::size_t t = 1; t <= timeline.size(); ++t) {
+                if (t == timeline.size() || !same_segment(timeline[seg_start], timeline[t])) {
+                    const auto& snap = timeline[seg_start];
+                    const std::size_t seg_end = t - 1;
+                    const std::size_t dur = seg_end - seg_start + 1;
+                    std::string where = snap.location_id ? ("@ " + *snap.location_id)
+                        : (snap.move ? (snap.move->from + " -> " + snap.move->to + " (" + format_fixed(snap.move->distance_m, 0) + "m)") : "-");
+                    if (snap.occupied_seat) where += " [占座:" + *snap.occupied_seat + "]";
+                    out_ << "     • t = " << pad_left(std::to_string(seg_start), 3) << " .. "
+                         << pad_left(std::to_string(seg_end), 3) << "m ("
+                         << pad_left(std::to_string(dur), 3) << "分钟) : "
+                         << pad_right(state_zh(snap.state), 10) << " | " << where << '\n';
+                    seg_start = t;
+                }
             }
         }
     }
-    CampusEnvironment env_flex;
-    env_flex.replace_scenario(std::move(sc_flex));
-
-    out_ << "\n" << style(ansi::bold_green, "★ 实验二结果：专用窗口 vs 通用窗口对照 (service_campus, 60人, 3食堂×3窗口, 60分钟)") << '\n';
-    out_ << "  " << pad_right("窗口配置方案", 26) << pad_left("完成取餐", 10) << pad_left("全校峰值总队列", 16)
-         << pad_left("总等待(m)", 11) << pad_left("平均等待", 10) << "  等待时长直观对比\n";
-    out_ << "  " << std::string(90, '-') << '\n';
-
-    struct Item { std::string label; const CampusEnvironment* env; };
-    std::vector<std::tuple<std::string, std::size_t, std::size_t, std::int64_t, double>> results;
-    std::int64_t max_w = 1;
-    for (const auto& item : std::vector<Item>{{"专用窗口 (Dedicated 1窗1品)", &env_ded}, {"通用窗口 (Flexible 窗窗全品)", &env_flex}}) {
-        const auto run = execute_simulation(*item.env, pop, 60);
-        std::size_t comp = 0, started = 0, max_total_q = 0;
-        std::int64_t wait_sum = 0;
-        for (const auto& f : run.summaries) {
-            comp += f.completed;
-            started += f.started;
-            wait_sum += f.total_wait_minutes;
-        }
-        for (const auto& frame : run.frames) {
-            std::size_t tq = 0;
-            for (const auto& fs : frame.facilities) tq += fs.queue_length;
-            max_total_q = std::max(max_total_q, tq);
-        }
-        const double mw = started ? static_cast<double>(wait_sum) / static_cast<double>(started) : 0.0;
-        max_w = std::max(max_w, wait_sum);
-        results.emplace_back(item.label, comp, max_total_q, wait_sum, mw);
-    }
-    for (const auto& [label, comp, mq, ws, mw] : results) {
-        out_ << "  " << pad_right(label, 26)
-             << pad_left(std::to_string(comp) + "/60", 10)
-             << pad_left(std::to_string(mq), 16)
-             << pad_left(std::to_string(ws), 11)
-             << pad_left(format_fixed(mw, 2) + "m", 10)
-             << "  " << make_bar(static_cast<double>(ws) / static_cast<double>(max_w), 16, color_, ansi::magenta) << '\n';
-    }
-    out_ << "  " << style(ansi::bright_cyan, "结论洞察: 窗口总数与单品制作耗时完全不变时，通用窗口配合二分图增广匹配消除了“面食排队而米饭窗空闲”的结构性闲置。") << '\n';
 }
 
-void ConsoleWorkbench::run_experiment_schedule_bottlenecks() {
-    CampusEnvironment base_env;
-    base_env.load_directory(root_ / "data/scenarios/campus_day");
-    auto pop = read_student_specs(root_ / "data/students/campus_day.csv");
-    pop = read_schedules(root_ / "data/schedules/campus_day.csv", pop);
+namespace {
+struct StudentLunchOutcome {
+    std::optional<SimTime> window_wait;
+    std::optional<SimTime> served_at;
+    std::optional<SimTime> eating_at;
+    std::vector<ActivityRecord> activities;
+};
 
-    auto make_seat_scaled = [&](const std::set<LocationId>& targets) {
-        auto sc = base_env.scenario();
-        for (auto& pool : sc.seat_pools) {
-            if (targets.count(pool.location_id)) pool.capacity *= 2;
-        }
-        CampusEnvironment e;
-        e.replace_scenario(std::move(sc));
-        return e;
-    };
+struct LunchTimingResult {
+    std::string label;
+    std::map<StudentId, StudentLunchOutcome> students;
+    SimTime peak_at{0};
+    std::size_t peak_queue{0};
+    std::optional<double> mean_wait;
+    std::optional<SimTime> p90_wait;
+    std::size_t started{0}, served{0}, finished{0};
+    std::size_t late_classes{0}, unstarted_classes{0}, late_study{0}, unstarted_study{0};
+};
 
-    auto sc_detour = base_env.scenario();
-    const std::set<std::pair<LocationId, LocationId>> closed{
-        {"L_NEAR", "L_T1"}, {"L_LAB", "L_WEST"}, {"L_FAR", "L_LIBRARY_E"}};
-    sc_detour.roads.erase(
-        std::remove_if(sc_detour.roads.begin(), sc_detour.roads.end(), [&](const Road& r) {
-            const auto key = std::minmax(r.from, r.to);
-            return closed.count({key.first, key.second}) > 0;
-        }),
-        sc_detour.roads.end());
-    CampusEnvironment env_detour;
-    env_detour.replace_scenario(std::move(sc_detour));
-
-    const auto env_dining = make_seat_scaled({"L_NEAR", "L_FAR", "L_WEST"});
-    const auto env_study = make_seat_scaled({"L_LIBRARY", "L_LIBRARY_E", "L_LIBRARY_W"});
-
-    struct Variant { std::string name; const CampusEnvironment* env; };
-    const std::vector<Variant> variants{
-        {"1. 基准场景 (Baseline)", &base_env},
-        {"2. 仅食堂座位翻倍 (×2)", &env_dining},
-        {"3. 仅图书馆座位翻倍 (×2)", &env_study},
-        {"4. 封闭三条主干道路", &env_detour},
-    };
-
-    out_ << "\n" << style(ansi::bold_green, "★ 实验三结果：全天多活动日程瓶颈定位与封路冲击 (36人, 216项活动, 160分钟)") << '\n';
-    out_ << "  " << pad_right("实验方案", 26) << pad_left("完成活动", 10) << pad_left("迟到课程", 10)
-         << pad_left("课程总延迟", 12) << pad_left("总等座时长", 12) << pad_left("总行程(m)", 11)
-         << pad_left("全员结束", 10) << "  延迟对比\n";
-    out_ << "  " << std::string(106, '-') << '\n';
-
-    for (const auto& v : variants) {
-        const auto run = execute_simulation(*v.env, pop, 160);
-        double total_dist = 0.0;
-        for (const auto& a : run.activities) total_dist += a.distance_m;
-        const auto delay = run.total_class_delay_minutes();
-        const auto seat_w = run.total_observed_seat_wait();
-        const auto end_at = run.all_finished_minute();
-        out_ << "  " << pad_right(v.name, 26)
-             << pad_left(std::to_string(run.completed_activities_count()) + "/216", 10)
-             << pad_left(std::to_string(run.late_classes_count()), 10)
-             << pad_left(std::to_string(delay) + "m", 12)
-             << pad_left(std::to_string(seat_w) + "m", 12)
-             << pad_left(format_fixed(total_dist, 0), 11)
-             << pad_left(end_at ? ("t=" + std::to_string(*end_at) + "m") : "未完", 10)
-             << "  " << make_bar(static_cast<double>(delay) / 1100.0, 12, color_, ansi::bright_cyan) << '\n';
-    }
-    out_ << "  " << style(ansi::bright_cyan, "结论洞察: 图书馆座位翻倍使总等座从 885m 骤降至 357m，全员结束从第124分钟提前到第94分钟（核心瓶颈在自习座位而非食堂座位）；") << '\n'
-         << "  " << style(ansi::bright_cyan, "          封闭3条道路使总步行距离从 30240m 增至 34800m，虽然错峰使等座略降，但课程总延迟升至 1055m！") << '\n';
+std::string campus_clock(const std::optional<SimTime>& at) {
+    if (!at) return "-";
+    const auto minute = 480 + static_cast<std::int64_t>(*at);
+    std::ostringstream text;
+    text << std::setfill('0') << std::setw(2) << minute / 60 << ':' << std::setw(2) << minute % 60;
+    return text.str();
 }
 
-void ConsoleWorkbench::run_experiment_lunch_sensitivity() {
-    CampusEnvironment base_env;
-    base_env.load_directory(root_ / "data/scenarios/two_canteens");
-    const auto base_pop = read_student_specs(root_ / "data/students/two_canteens.csv");
+std::string minutes_text(const std::optional<SimTime>& minutes) {
+    return minutes ? std::to_string(*minutes) : "-";
+}
 
-    auto sc_more = base_env.scenario();
-    for (auto& f : sc_more.facilities) {
-        if (f.id == "F_NEAR") f.window_count = 3;
+LunchTimingResult summarize_lunch_timing(std::string label, RecordedRun run) {
+    LunchTimingResult result;
+    result.label = std::move(label);
+    result.finished = run.finished_students_at(run.settings.duration_minutes);
+    std::vector<SimTime> waits;
+    std::int64_t total_wait = 0;
+    std::set<LocationId> dining_pools;
+    for (const auto& facility : run.scenario.facilities) {
+        for (const auto& pool : run.scenario.seat_pools) {
+            if (facility.location_id == pool.location_id) dining_pools.insert(pool.location_id);
+        }
     }
-    CampusEnvironment env_more;
-    env_more.replace_scenario(std::move(sc_more));
+    for (const auto& frame : run.frames) {
+        std::size_t waiting = 0;
+        for (const auto& facility : frame.facilities) waiting += facility.queue_length;
+        if (waiting > result.peak_queue) {
+            result.peak_queue = waiting;
+            result.peak_at = frame.at;
+        }
+        for (const auto& event : frame.started) {
+            result.students[event.student_id].window_wait = event.wait_minutes;
+            total_wait += event.wait_minutes;
+            waits.push_back(event.wait_minutes);
+        }
+        for (const auto& event : frame.completed) {
+            auto& person = result.students[event.student_id];
+            person.served_at = event.at;
+            ++result.served;
+        }
+        for (const auto& grant : frame.seat_grants) {
+            if (dining_pools.count(grant.request.location_id))
+                result.students[grant.request.student_id].eating_at = grant.at;
+        }
+    }
 
-    auto fast_pop = base_pop;
-    for (auto& s : fast_pop) s.walk_m_per_min *= 2.0;
+    for (auto& activity : run.activities) {
+        auto& person = result.students[activity.student_id];
+        if (activity.activity.kind == ActivityKind::Lunch &&
+            !dining_pools.count(activity.destination)) person.eating_at = person.served_at;
+        if (activity.activity.kind == ActivityKind::Class && activity.activity.id == "afternoon") {
+            if (!activity.started_at) ++result.unstarted_classes;
+            else if (*activity.started_at > activity.activity.start_minute) ++result.late_classes;
+        }
+        if (activity.activity.kind == ActivityKind::Study) {
+            if (!activity.started_at) ++result.unstarted_study;
+            else if (*activity.started_at > activity.activity.start_minute) ++result.late_study;
+        }
+        person.activities.push_back(std::move(activity));
+    }
+    result.started = waits.size();
+    if (!waits.empty()) {
+        result.mean_wait = static_cast<double>(total_wait) / waits.size();
+        std::sort(waits.begin(), waits.end());
+        result.p90_wait = waits[waits.size() - waits.size() / 10 - 1];
+    }
+    return result;
+}
+}  // namespace
 
-    struct Setup { std::string name; const CampusEnvironment* env; const std::vector<StudentSpec>* pop; };
-    const std::vector<Setup> setups{
-        {"基准 (F_NEAR=2窗, 原步速)", &base_env, &base_pop},
-        {"扩容 (F_NEAR=3窗, 原步速)", &env_more, &base_pop},
-        {"提速 (F_NEAR=2窗, 步速×2)", &base_env, &fast_pop},
+void ConsoleWorkbench::menu_lunch_timing_experiment() {
+    out_ << "\n午餐实验\n"
+         << "  [1] 单方案展示 · 选择一种方案并打开回放\n"
+         << "  [2] 总结果对照 · 比较三种方案及宽错峰参照\n"
+         << "  [0] 返回主菜单\n";
+    std::string choice;
+    if (!prompt_line("选择> ", choice) || choice.empty() || choice == "0") return;
+    if (choice == "1") {
+        if (scenario_dirty_) {
+            std::string confirm;
+            if (!prompt_line("切换到旗舰实验会放弃当前场景的未保存修改，继续？(y/N)> ", confirm) ||
+                (confirm != "y" && confirm != "Y")) return;
+        }
+        if (choose_flagship()) {
+            out_ << "当前实验：" << active_preset_title_ << '\n';
+            menu_simulation_playback();
+        }
+    } else if (choice == "2") {
+        show_lunch_timing_comparison();
+    } else {
+        out_ << "请输入 1、2 或 0。\n";
+    }
+}
+
+void ConsoleWorkbench::show_lunch_timing_comparison() {
+    out_ << "\n午餐错峰对照 · 旗舰校园\n"
+         << "使用同一批学生、餐品、窗口、座位和课表，只调整计划去吃午餐的时间。\n"
+         << "计算完成后可按学号对比四组完整日程。\n";
+    CampusEnvironment campus;
+    campus.load_directory(root_ / "data/scenarios/campus_flagship");
+    const auto student_file = root_ / "data/students/campus_flagship.csv";
+    const auto schedule_dir = root_ / "data/schedules";
+    const auto baseline = read_scheduled_students(student_file, schedule_dir / "campus_flagship.csv");
+
+    constexpr SimTime duration = 600;
+    std::vector<LunchTimingResult> results;
+    const auto run_variant = [&](const std::string& label, std::vector<StudentSpec> population) {
+        out_ << "正在计算 " << label << "（" << population.size() << " 人）…\n" << std::flush;
+        results.push_back(summarize_lunch_timing(label,
+            load_or_simulate(campus, population, duration)));
     };
-
-    out_ << "\n" << style(ansi::bold_green, "★ 实验四结果：窗口扩容 vs 步行提速对照 (two_canteens, 40人, 120分钟)") << '\n';
-    out_ << "  " << pad_right("对照方案", 28) << pad_left("F_NEAR等待", 12) << pad_left("F_NEAR峰值", 12)
-         << pad_left("F_FAR等待", 12) << pad_left("F_FAR峰值", 12) << pad_left("全员结束时刻", 14) << '\n';
-    out_ << "  " << std::string(92, '-') << '\n';
-    for (const auto& st : setups) {
-        const auto run = execute_simulation(*st.env, *st.pop, 120);
-        std::map<FacilityId, FacilitySummary> by_id;
-        for (const auto& s : run.summaries) by_id[s.facility_id] = s;
-        const auto done_at = run.all_finished_minute();
-        out_ << "  " << pad_right(st.name, 28)
-             << pad_left(std::to_string(by_id["F_NEAR"].total_wait_minutes) + "m", 12)
-             << pad_left(std::to_string(by_id["F_NEAR"].max_queue_length), 12)
-             << pad_left(std::to_string(by_id["F_FAR"].total_wait_minutes) + "m", 12)
-             << pad_left(std::to_string(by_id["F_FAR"].max_queue_length), 12)
-             << pad_left(done_at ? ("t=" + std::to_string(*done_at) + "m") : "-", 14) << '\n';
+    for (auto plan : {LunchPlan::Concentrated, LunchPlan::Staggered20, LunchPlan::Staggered40}) {
+        auto population = baseline;
+        apply_lunch_plan(population, plan);
+        run_variant(lunch_plan_name(plan), std::move(population));
     }
-    out_ << "  " << style(ansi::bright_cyan, "结论洞察: F_NEAR 增加 1 个窗口将等待从 160m 降至 94m 且完全不影响 F_FAR；而盲目提高步速会使人群更集中到达，反而推高排队峰值！") << '\n';
+    run_variant("宽错峰参照", read_schedules(schedule_dir / "campus_flagship_wide_lunch.csv", baseline));
+
+    out_ << "\n各方案汇总 · 截止 18:00\n";
+    for (const auto& row : results) {
+        out_ << "  " << row.label << " | 全校窗口队列峰值 " << row.peak_queue
+             << " 人 @" << campus_clock(row.peak_queue ? std::optional<SimTime>(row.peak_at) : std::nullopt)
+             << " | 等窗均值/P90 "
+             << (row.mean_wait ? format_fixed(*row.mean_wait, 1) : "-") << '/'
+             << minutes_text(row.p90_wait) << " 分（已开始取餐 " << row.started << " 人）\n"
+             << "    已出餐 " << row.served << " | 下午课迟到 " << row.late_classes
+             << "、未开始 " << row.unstarted_classes << " | 自习迟到 " << row.late_study
+             << "、未开始 " << row.unstarted_study << " | 完成全天 " << row.finished << '\n';
+    }
+
+    while (true) {
+        std::string id;
+        if (!prompt_line("\n输入学号对照（如 S0001，回车或 0 返回）> ", id) || id.empty() || id == "0") return;
+        if (baseline.empty() || !results.front().students.count(id)) {
+            out_ << "未找到学生 " << id << '\n';
+            continue;
+        }
+        out_ << "\n学生 " << id << " 的四种日程\n";
+        for (const auto& row : results) {
+            const auto& person = row.students.at(id);
+            out_ << "  " << row.label << " | 等窗 " << minutes_text(person.window_wait)
+                 << " 分 | 出餐 " << campus_clock(person.served_at)
+                 << " | 开始吃饭 " << campus_clock(person.eating_at) << '\n';
+            out_ << "    " << pad_right("活动", 13) << pad_right("地点", 7) << pad_right("计划", 8)
+                 << pad_right("出发", 8) << pad_right("到达", 8) << pad_right("开始", 8)
+                 << pad_right("完成", 8) << "等座(分)\n";
+            for (const auto& activity : person.activities) {
+                const bool lunch = activity.activity.kind == ActivityKind::Lunch;
+                out_ << "    " << pad_right(activity.activity.id, 13)
+                     << pad_right(activity.destination.empty() ? "-" : activity.destination, 7)
+                     << pad_right(campus_clock(activity.activity.start_minute), 8)
+                     << pad_right(campus_clock(activity.departed_at), 8)
+                     << pad_right(campus_clock(activity.arrived_at), 8)
+                     << pad_right(campus_clock(lunch ? person.eating_at : activity.started_at), 8)
+                     << pad_right(campus_clock(activity.completed_at), 8)
+                     << activity.seat_wait_minutes << '\n';
+            }
+        }
+    }
 }
 
 void ConsoleWorkbench::menu_map_and_routes() {
@@ -1594,16 +2187,21 @@ void ConsoleWorkbench::menu_map_and_routes() {
     }
 }
 
-void ConsoleWorkbench::menu_scenario_editor() {
-    out_ << "\n" << style(ansi::bold_cyan, "─── [6] 校园场景沙盒在线编辑器 (RBAC 权限保护) ───") << '\n';
-    if (current_role_ != UserRole::Admin) {
-        out_ << style(ansi::bold_yellow, "⚠ 权限拒绝：场景编辑属于受保护管理操作，需要管理员 (Admin) 权限！") << '\n'
-             << "  当前身份: " << role_label_zh(current_role_) << '\n'
-             << "  提示: 请先前往主菜单 " << style(ansi::bold_white, "[7] 本地账号认证与角色权限中心")
-             << " 使用“一键演示管理员登录”或注册管理员账号。\n";
-        return;
+namespace {
+std::filesystem::path new_output_directory(const std::filesystem::path& parent, const std::string& prefix) {
+    std::filesystem::create_directories(parent);
+    const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    for (int attempt = 0; attempt < 100; ++attempt) {
+        const auto candidate = parent / (prefix + "-" + std::to_string(stamp) + "-" + std::to_string(attempt));
+        if (std::filesystem::create_directory(candidate)) return candidate;
     }
+    throw ValidationError("无法创建个人输出目录");
+}
+}  // namespace
 
+void ConsoleWorkbench::menu_scenario_editor() {
+    out_ << "\n校园场景编辑 · 保存到个人目录\n";
     while (true) {
         out_ << "\n  当前沙盒: " << environment_.scenario().locations.size() << " 地点 | "
              << environment_.scenario().roads.size() << " 道路 | "
@@ -1617,7 +2215,7 @@ void ConsoleWorkbench::menu_scenario_editor() {
              << "  [0] 返回主菜单 (修改立即对 [2] 仿真看板生效)\n";
 
         std::string cmd;
-        if (!prompt_line("editor(admin)> ", cmd) || cmd.empty() || cmd == "0" || cmd == "q") break;
+        if (!prompt_line("editor> ", cmd) || cmd.empty() || cmd == "0" || cmd == "q") break;
         try {
             if (cmd == "1") {
                 std::string line;
@@ -1695,10 +2293,7 @@ void ConsoleWorkbench::menu_scenario_editor() {
                 cached_run_.reset();
                 out_ << style(ansi::bright_green, "✓ 已删除地点 " + id + "\n");
             } else if (cmd == "7") {
-                std::string out_dir;
-                if (!prompt_line("输入保存目标目录 (默认 outputs/edited_scenario)> ", out_dir)) continue;
-                if (out_dir.empty()) out_dir = (root_ / "outputs/edited_scenario").u8string();
-                const auto target = std::filesystem::u8path(out_dir);
+                const auto target = new_output_directory(user_directory() / "scenarios", "campus");
                 environment_.save_directory(target);
                 scenario_dirty_ = false;
                 out_ << style(ansi::bright_green, "✓ 场景已原子校验并保存至: " + target.u8string() + "\n");
@@ -1711,93 +2306,6 @@ void ConsoleWorkbench::menu_scenario_editor() {
         } catch (const std::exception& ex) {
             out_ << style(ansi::bold_red, std::string("校验拒绝 (原场景保持完好): ") + ex.what()) << '\n';
         }
-    }
-}
-
-void ConsoleWorkbench::menu_accounts() {
-    out_ << "\n" << style(ansi::bold_cyan, "─── [7] 本地账号认证与角色权限管理 (AccountStore + RBAC) ───") << '\n'
-         << "  安全机制 : PBKDF2-HMAC-SHA256 (200,000 次迭代, 128-bit 随机盐, 常量时间摘要比对, 临时文件原子写入)\n"
-         << "  当前会话 : " << (current_user_.empty() ? "未登录" : current_user_) << " | 角色: " << role_label_zh(current_role_) << '\n'
-         << "\n  " << style(ansi::bold_white, "[1] ") << "一键体验演示管理员登录 (自动初始化并登录本地 admin 账号，适合现场答辩快速演示)\n"
-         << "  " << style(ansi::bold_white, "[2] ") << "注册新本地账号 (register_user)\n"
-         << "  " << style(ansi::bold_white, "[3] ") << "使用账号密码登录 (login)\n"
-         << "  " << style(ansi::bold_white, "[4] ") << "注销当前登录回到访客模式 (logout)\n"
-         << "  " << style(ansi::dim, "[0] 返回主菜单") << '\n';
-
-    std::string choice;
-    if (!prompt_line("auth> ", choice) || choice.empty() || choice == "0") return;
-    if (choice == "1") {
-        const std::string demo_user = "admin";
-        const std::string demo_pass = "Campus2026!";
-        if (!accounts_.contains(demo_user)) {
-            out_ << style(ansi::dim, "正在通过 PBKDF2-HMAC-SHA256 (200,000 iterations) 初始化本地演示管理员...\n");
-            accounts_.register_user(demo_user, demo_pass);
-            roles_.set_role(demo_user, UserRole::Admin);
-        }
-        if (accounts_.login(demo_user, demo_pass)) {
-            current_user_ = demo_user;
-            current_role_ = UserRole::Admin;
-            roles_.set_role(demo_user, UserRole::Admin);
-            out_ << style(ansi::bold_green, "✓ 已通过 PBKDF2 校验登录为管理员 [admin]！现已解锁 [6] 场景编辑器与 [8] 数据导出。\n");
-        } else {
-            out_ << style(ansi::yellow, "本地已存在自定义密码的 admin 账号，请使用 [3] 输入密码登录。\n");
-        }
-    } else if (choice == "2") {
-        std::string user, pass, role_sel;
-        if (!prompt_line("设置用户名 (3-32位字母/数字/下划线)> ", user)) return;
-        if (!prompt_line("设置密码 (至少8位可打印字符)> ", pass)) return;
-        if (!prompt_line("选择角色 [1=普通用户 Student, 2=管理员 Admin] (默认 2)> ", role_sel)) return;
-        const UserRole r = (role_sel == "1") ? UserRole::Student : UserRole::Admin;
-        accounts_.register_user(user, pass);
-        roles_.set_role(user, r);
-        current_user_ = user;
-        current_role_ = r;
-        out_ << style(ansi::bold_green, "✓ 注册成功并自动登录为 " + user + " (" + role_label_zh(r) + ")！\n");
-    } else if (choice == "3") {
-        std::string user, pass;
-        if (!prompt_line("用户名> ", user)) return;
-        if (!prompt_line("密码> ", pass)) return;
-        if (!accounts_.login(user, pass)) {
-            throw ValidationError("用户名或密码错误 (PBKDF2 摘要校验未通过)");
-        }
-        current_user_ = user;
-        current_role_ = roles_.role_of(user);
-        out_ << style(ansi::bold_green, "✓ 登录成功: " + current_user_ + " (" + role_label_zh(current_role_) + ")\n");
-    } else if (choice == "4") {
-        current_user_.clear();
-        current_role_ = UserRole::Guest;
-        out_ << style(ansi::bright_cyan, "已注销，切换回访客只读模式。\n");
-    }
-}
-
-void ConsoleWorkbench::menu_export() {
-    out_ << "\n" << style(ansi::bold_cyan, "─── [8] 导出标准 CSV 数据集 / 生成离线 HTML 总报告 ───") << '\n';
-    if (current_role_ == UserRole::Guest) {
-        out_ << style(ansi::yellow, "提示: 文件导出需要登录账号 (Student 或 Admin)。请先在 [7] 登录（支持一键演示登录）。\n");
-        return;
-    }
-
-    const auto now_stamp = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    const auto suggested = root_ / "outputs" / ("ui_export_" + std::to_string(now_stamp));
-
-    out_ << "  [1] 运行当前场景并导出标准 CSV 契约文件 (CompositeRunWriter 同步写内存与磁盘)\n"
-         << "  [2] 查看全阶段离线 HTML 实验报告生成命令指引\n"
-         << "  [0] 返回主菜单\n";
-    std::string sel;
-    if (!prompt_line("export> ", sel) || sel.empty() || sel == "0") return;
-    if (sel == "1") {
-        std::string dir_str;
-        if (!prompt_line("输出目录 (直接回车使用 " + suggested.u8string() + ")> ", dir_str)) return;
-        const auto out_dir = dir_str.empty() ? suggested : std::filesystem::u8path(dir_str);
-        cached_run_ = execute_simulation(environment_, population_, settings_.duration_minutes, out_dir);
-        const bool detailed = (!population_.empty() && !population_.front().activities.empty()) ||
-                              !environment_.scenario().seat_pools.empty();
-        out_ << style(ansi::bold_green, "✓ 已成功写出 " + std::string(detailed ? "8" : "5") + " 份标准 CSV 文件至: " + out_dir.u8string()) << '\n';
-    } else if (sel == "2") {
-        out_ << "\n  可在终端执行以下命令一键生成五合一离线交互 HTML 实验总报告:\n"
-             << "    " << style(ansi::bright_cyan, "python tools/run_all_stages.py --executable build/campustwin.exe --output outputs/all_stages") << '\n'
-             << "    " << style(ansi::bright_cyan, "Start-Process outputs/all_stages/report.html") << '\n';
     }
 }
 

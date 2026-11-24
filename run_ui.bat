@@ -2,10 +2,12 @@
 setlocal
 chcp 65001 >nul
 cd /d "%~dp0"
-if not exist "build\campustwin.exe" (
-    echo [ERROR] build\campustwin.exe not found. Please run: cmake -B build ^&^& cmake --build build
+set "exe=build\campustwin.exe"
+if not exist "%exe%" set "exe=build\Release\campustwin.exe"
+if not exist "%exe%" (
+    echo [ERROR] Build campustwin.exe first. See README.md.
     pause
     exit /b 1
 )
-"build\campustwin.exe" --ui
+"%exe%" --ui
 if errorlevel 1 pause

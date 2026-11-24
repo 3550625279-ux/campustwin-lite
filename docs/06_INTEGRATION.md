@@ -6,7 +6,7 @@
 
 1. 入口解析命令行。路线模式只加载场景并查询路径，不进入仿真。
 2. `CampusEnvironment::load_directory` 加载地点、道路、设施及可选窗口餐品/座位配置。
-3. `read_student_specs` 读取学生；可选 `--policy` 覆盖策略；`read_schedules` 绑定可选日程。
+3. `read_student_specs` 读取学生；可选 `--policy` 覆盖策略；`read_schedules` 绑定每名学生的必备日程。
 4. 创建 `StudentEngine`、`FacilityEngine`、`SeatEngine` 和 `CsvRunWriter`。传入日程或配置有限座位时启用八份文件的详细输出。
 5. `SimulationRunner::run` 通过接口引用接收对象，依次重置学生、窗口、座位，并调用 `writer.begin`。
 
