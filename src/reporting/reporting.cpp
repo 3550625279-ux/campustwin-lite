@@ -33,6 +33,7 @@ const char* activity_name(ActivityKind kind) {
     case ActivityKind::Study: return "study";
     case ActivityKind::Rest: return "rest";
     case ActivityKind::Lunch: return "lunch";
+    case ActivityKind::Sport: return "sport";
     }
     throw ValidationError("C: unknown activity kind");
 }
@@ -76,9 +77,9 @@ void CsvRunWriter::begin(const SimulationSettings& settings, const CampusScenari
         seat_events_.open(output_directory_ / "seat_events.csv", std::ios::binary);
         seat_snapshots_.open(output_directory_ / "seat_snapshots.csv", std::ios::binary);
         ensure(activities_, "activities.csv"); ensure(seat_events_, "seat_events.csv"); ensure(seat_snapshots_, "seat_snapshots.csv");
-        activities_ << "student_id,sequence,activity_id,kind,location_id,planned_start,duration_minutes,requires_seat,departed_at,arrived_at,started_at,completed_at,start_delay_minutes,seat_wait_minutes,distance_m,route_path,status\n";
-        seat_events_ << "at,type,request_id,student_id,location_id,requested_at,duration_minutes,until,wait_minutes\n";
-        seat_snapshots_ << "at,location_id,capacity,queued,occupied,arrived,granted,released,max_queue,total_wait_minutes,busy_seat_minutes\n";
+        activities_ << "student_id,sequence,activity_id,kind,location_id,planned_start,duration_minutes,requires_seat,departed_at,arrived_at,started_at,completed_at,start_delay_minutes,seat_wait_minutes,distance_m,route_path,status,missed_at,meal_received_at,effective_meal_minutes\n";
+        seat_events_ << "at,type,request_id,student_id,location_id,requested_at,duration_minutes,until,wait_minutes,fixed_until\n";
+        seat_snapshots_ << "at,location_id,capacity,queued,occupied,arrived,granted,released,max_queue,total_wait_minutes,busy_seat_minutes,expired\n";
     }
     activities_written_ = false; last_seat_tick_ = -1;
     duration_ = settings.duration_minutes; next_tick_ = 0; last_decision_tick_ = -1; begun_ = true;
@@ -242,10 +243,12 @@ void CsvRunWriter::write_seats(SimTime now, const std::vector<SeatRequest>& requ
     auto event = [&](const SeatRequest& r, const char* type, std::optional<SimTime> until) {
         csv_check(r.request_id); csv_check(r.student_id); csv_check(r.location_id);
         events << now << ',' << type << ',' << r.request_id << ',' << r.student_id << ',' << r.location_id
-               << ',' << r.at << ',' << r.duration_minutes << ',';
+               << ',' << r.at << ',' << (until ? *until - now : r.duration_minutes) << ',';
         if (until) events << *until;
         events << ',';
         if (until) events << now - r.at;
+        events << ',';
+        if (r.fixed_until) events << *r.fixed_until;
         events << '\n';
     };
     for (const auto& r : requests) {
@@ -261,7 +264,7 @@ void CsvRunWriter::write_seats(SimTime now, const std::vector<SeatRequest>& requ
         csv_check(s.location_id);
         rows << now << ',' << s.location_id << ',' << s.capacity << ',' << s.queued << ',' << s.occupied << ','
              << s.arrived << ',' << s.granted << ',' << s.released << ',' << s.max_queue << ','
-             << s.total_wait_minutes << ',' << s.busy_seat_minutes << '\n';
+             << s.total_wait_minutes << ',' << s.busy_seat_minutes << ',' << s.expired << '\n';
     }
     seat_events_ << events.str(); seat_snapshots_ << rows.str();
     ensure(seat_events_, "seat_events.csv"); ensure(seat_snapshots_, "seat_snapshots.csv");
@@ -281,14 +284,19 @@ void CsvRunWriter::write_activities(const std::vector<ActivityRecord>& records) 
     for (const auto& r : records) {
         csv_check(r.student_id); csv_check(r.activity.id); csv_check(r.destination);
         rows << r.student_id << ',' << ++sequences[r.student_id] << ',' << r.activity.id << ','
-             << activity_name(r.activity.kind) << ',' << r.destination << ',' << r.activity.start_minute << ','
-             << r.activity.duration_minutes << ',' << (r.activity.requires_seat ? 1 : 0) << ',';
+             << activity_name(r.activity.kind) << ',' << r.destination << ',';
+        if (!r.activity.after_previous) rows << r.activity.start_minute;
+        rows << ',' << r.activity.duration_minutes << ',' << (r.activity.requires_seat ? 1 : 0) << ',';
         auto optional = [&](const std::optional<SimTime>& t) { if (t) rows << *t; rows << ','; };
         optional(r.departed_at); optional(r.arrived_at); optional(r.started_at); optional(r.completed_at);
-        if (r.started_at) rows << *r.started_at - r.activity.start_minute;
+        if (r.started_at && !r.activity.after_previous) rows << *r.started_at - r.activity.start_minute;
         rows << ',' << r.seat_wait_minutes << ',' << r.distance_m << ',';
         for (std::size_t i = 0; i < r.path.size(); ++i) { csv_check(r.path[i]); if (i) rows << '|'; rows << r.path[i]; }
-        rows << ',' << (r.completed_at ? "completed" : r.started_at ? "active" : r.departed_at ? "pending" : "planned") << '\n';
+        rows << ',' << (r.completed_at ? "completed" : r.missed_at ? "missed" : r.started_at ? "active" : r.departed_at ? "pending" : "planned") << ',';
+        optional(r.missed_at);
+        optional(r.meal_received_at);
+        if (r.effective_meal_minutes) rows << *r.effective_meal_minutes;
+        rows << '\n';
     }
     activities_ << rows.str(); ensure(activities_, "activities.csv"); activities_written_ = true;
 }

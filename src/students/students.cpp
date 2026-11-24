@@ -156,7 +156,9 @@ std::vector<StudentSpec> read_schedules(const std::filesystem::path& file,
     std::string line;
     if (!std::getline(input, line)) invalid("schedule", "missing header");
     if (!line.empty() && line.back() == '\r') line.pop_back();
-    if (line != "student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat")
+    const std::string header = "student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat";
+    const bool has_meal_threshold = line == header + ",fast_meal_from";
+    if (line != header && !has_meal_threshold)
         invalid("schedule", "unexpected schedule CSV header");
     auto result = population;
     std::map<StudentId, std::map<SimTime, ActivitySpec>> schedules;
@@ -171,7 +173,7 @@ std::vector<StudentSpec> read_schedules(const std::filesystem::path& file,
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
         const auto context = file.u8string() + ":" + std::to_string(number);
-        const auto f = split_row(line, context, 8);
+        const auto f = split_row(line, context, has_meal_threshold ? 9 : 8);
         if (!schedules.count(f[0])) invalid(context, "unknown schedule student");
         ActivitySpec a;
         a.id = f[2]; check_id(a.id, context + " activity_id");
@@ -179,12 +181,18 @@ std::vector<StudentSpec> read_schedules(const std::filesystem::path& file,
         else if (f[3] == "study") a.kind = ActivityKind::Study;
         else if (f[3] == "rest") a.kind = ActivityKind::Rest;
         else if (f[3] == "lunch") a.kind = ActivityKind::Lunch;
-        else invalid(context, "kind must be class, study, rest or lunch");
+        else if (f[3] == "sport") a.kind = ActivityKind::Sport;
+        else invalid(context, "kind must be class, study, rest, lunch or sport");
         a.location_id = f[4];
-        a.start_minute = parse_time(f[5], 0, context + " start_minute");
+        a.after_previous = a.kind == ActivityKind::Rest && f[5].empty();
+        if (!a.after_previous) a.start_minute = parse_time(f[5], 0, context + " start_minute");
         a.duration_minutes = parse_time(f[6], 1, context + " duration_minutes");
         if (f[7] != "0" && f[7] != "1") invalid(context, "requires_seat must be 0 or 1");
         a.requires_seat = f[7] == "1";
+        if (has_meal_threshold && !f[8].empty()) {
+            if (a.kind != ActivityKind::Lunch) invalid(context, "fast_meal_from applies only to lunch");
+            a.fast_meal_from = parse_time(f[8], 0, context + " fast_meal_from");
+        }
         const auto sequence = parse_time(f[1], 1, context + " sequence");
         if (!schedules.at(f[0]).emplace(sequence, std::move(a)).second)
             invalid(context, "duplicate schedule sequence");
@@ -277,10 +285,14 @@ void StudentEngine::reset(const CampusScenario& scenario,
         for (const auto& activity : spec.activities) {
             check_id(activity.id, context + " activity ID");
             if (!activity_ids.insert(activity.id).second || activity.start_minute < 0 ||
-                activity.start_minute < previous || activity.duration_minutes <= 0)
+                (!activity.after_previous && activity.start_minute < previous) || activity.duration_minutes <= 0)
                 invalid(context, "invalid activity ID, duration or start order");
+            if (activity.after_previous && activity.kind != ActivityKind::Rest)
+                invalid(context, "only rest activities can have no scheduled start");
+            if (activity.fast_meal_from && (*activity.fast_meal_from < 0 || activity.kind != ActivityKind::Lunch))
+                invalid(context, "fast_meal_from must be a nonnegative minute on lunch");
             checked_add(activity.start_minute, activity.duration_minutes, context + " activity");
-            previous = activity.start_minute;
+            if (!activity.after_previous) previous = activity.start_minute;
             if (activity.kind == ActivityKind::Lunch) {
                 ++lunches;
                 if (!activity.location_id.empty() || activity.requires_seat)
@@ -290,6 +302,7 @@ void StudentEngine::reset(const CampusScenario& scenario,
                 const bool valid_kind = found != locations.end() &&
                     ((activity.kind == ActivityKind::Class && found->second == LocationKind::Teaching) ||
                      (activity.kind == ActivityKind::Study && found->second == LocationKind::Library) ||
+                     (activity.kind == ActivityKind::Sport && found->second == LocationKind::Sports) ||
                      (activity.kind == ActivityKind::Rest && found->second == LocationKind::Dormitory));
                 if (!valid_kind) invalid(context, "activity location kind does not match");
                 if (activity.requires_seat && !seat_capacities.count(activity.location_id))
@@ -339,8 +352,14 @@ StudentEngine::StudentRuntime& StudentEngine::find_student(const StudentId& id) 
     return students_[found->second];
 }
 
-void StudentEngine::finish_activity(StudentRuntime& student, SimTime now) {
-    student.records.at(student.activity_index).completed_at = now;
+void StudentEngine::finish_activity(StudentRuntime& student, SimTime now, bool missed) {
+    auto& record = student.records.at(student.activity_index);
+    if (missed) {
+        record.missed_at = record.activity.start_minute + record.activity.duration_minutes;
+        if (student.seat_request) record.seat_wait_minutes = now - student.seat_request->at;
+    } else {
+        record.completed_at = now;
+    }
     ++student.activity_index;
     student.activity_until.reset();
     student.seat_request.reset(); student.occupied_seat.reset();
@@ -423,9 +442,13 @@ const LunchDecision& StudentEngine::choose_canteen(const StudentRuntime& student
 }
 
 void StudentEngine::request_seat(StudentRuntime& student, SimTime now, const RequestId& id) {
-    const auto duration = student.records.at(student.activity_index).activity.duration_minutes;
+    const auto& record = student.records.at(student.activity_index);
+    const auto& activity = record.activity;
+    const auto fixed_until = activity.kind == ActivityKind::Class
+        ? std::optional<SimTime>{activity.start_minute + activity.duration_minutes} : std::nullopt;
+    const auto duration = fixed_until ? *fixed_until - now : record.effective_meal_minutes.value_or(activity.duration_minutes);
     checked_add(now, duration, "seat occupancy");
-    student.seat_request = SeatRequest{id, student.spec.id, *student.location, now, duration};
+    student.seat_request = SeatRequest{id, student.spec.id, *student.location, now, duration, fixed_until};
     student.state = StudentState::WaitingSeat;
 }
 
@@ -460,7 +483,7 @@ void StudentEngine::start_due_activity(StudentRuntime& student, SimTime now, con
         const auto route = routes.find_route(*student.location, record.destination);
         const auto move = plan_move(route, *student.location, record.destination, now,
                                     student.spec.walk_m_per_min, student.spec.id);
-        if (now < activity.start_minute - (move.arrive_at - now)) return;
+        if (!activity.after_previous && now < activity.start_minute - (move.arrive_at - now)) return;
         record.departed_at = now;
         record.distance_m = move.distance_m;
         record.path = route.path;
@@ -470,12 +493,14 @@ void StudentEngine::start_due_activity(StudentRuntime& student, SimTime now, con
             record.arrived_at = record.departed_at = now;
             record.path = {*student.location};
         }
-        if (now < activity.start_minute) return;
+        if (!activity.after_previous && now < activity.start_minute) return;
         if (activity.requires_seat) {
             request_seat(student, now, student.spec.id + ":activity:" + activity.id);
         } else {
             record.started_at = now;
-            student.activity_until = checked_add(now, activity.duration_minutes, "activity end");
+            student.activity_until = activity.kind == ActivityKind::Class
+                ? activity.start_minute + activity.duration_minutes
+                : checked_add(now, activity.duration_minutes, "activity end");
             student.state = StudentState::InActivity;
         }
         return;
@@ -491,6 +516,11 @@ void StudentEngine::advance_student(StudentRuntime& student, SimTime now, const 
     while (student.state != StudentState::Finished) {
         auto& record = student.records.at(student.activity_index);
         const auto& activity = record.activity;
+        if (activity.kind == ActivityKind::Class && now >= activity.start_minute + activity.duration_minutes &&
+            (student.state == StudentState::AtLocation || student.state == StudentState::WaitingSeat)) {
+            finish_activity(student, now, true);
+            continue;
+        }
         switch (student.state) {
         case StudentState::AtLocation:
             start_due_activity(student, now, routes, advisor, statuses, decisions, arrivals);
@@ -606,11 +636,17 @@ void StudentEngine::on_service_completed(const ServiceCompleted& event) {
     const auto expected_at = checked_add(student.service->at, student.service_minutes, "service completion");
     if (event.window_id != student.service->window_id || event.at != expected_at)
         invalid("service completion", "window or completion time does not match the started service");
+    auto& record = student.records.at(student.activity_index);
+    const auto& activity = record.activity;
+    const bool fast = activity.fast_meal_from && event.at >= *activity.fast_meal_from;
+    const auto duration = fast ? activity.duration_minutes / 2 + activity.duration_minutes % 2 : activity.duration_minutes;
+    const auto eating_end_if_seated_now = checked_add(event.at, duration, "meal completion");
+    record.meal_received_at = event.at;
+    record.effective_meal_minutes = duration;
     if (seat_capacities_.count(*student.location)) {
         request_seat(student, event.at, student.request_id + ":seat");
     } else {
-        const auto duration = student.records.at(student.activity_index).activity.duration_minutes;
-        student.activity_until = checked_add(event.at, duration, "meal completion");
+        student.activity_until = eating_end_if_seated_now;
         student.state = StudentState::Eating;
     }
     completion_phase_started_ = true;
@@ -653,7 +689,8 @@ void StudentEngine::on_seat_granted(const SeatGranted& grant) {
     const auto& request = *student.seat_request;
     if (grant.request.request_id != request.request_id || grant.request.location_id != request.location_id ||
         grant.request.at != request.at || grant.request.duration_minutes != request.duration_minutes ||
-        grant.at < request.at || grant.until != checked_add(grant.at, request.duration_minutes, "seat grant"))
+        grant.request.fixed_until != request.fixed_until || grant.at < request.at || grant.until <= grant.at ||
+        grant.until != (request.fixed_until ? *request.fixed_until : checked_add(grant.at, request.duration_minutes, "seat grant")))
         invalid("seat grant", "request or occupancy time mismatch");
     student.occupied_seat = request.location_id;
     auto& record = student.records.at(student.activity_index);
@@ -669,6 +706,12 @@ std::vector<ActivityRecord> StudentEngine::activity_records() const {
     std::vector<ActivityRecord> records;
     for (const auto& student : students_) {
         auto current = student.records;
+        for (auto& record : current) {
+            const auto& activity = record.activity;
+            if (activity.kind == ActivityKind::Class && !record.started_at &&
+                activity.start_minute + activity.duration_minutes <= last_tick_)
+                record.missed_at = activity.start_minute + activity.duration_minutes;
+        }
         if (!current.empty() && student.state == StudentState::WaitingSeat && student.seat_request)
             current.at(student.activity_index).seat_wait_minutes = last_tick_ - student.seat_request->at;
         records.insert(records.end(), current.begin(), current.end());

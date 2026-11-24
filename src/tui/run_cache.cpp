@@ -14,7 +14,7 @@ namespace campustwin {
 namespace {
 
 // Bump the version when simulation rules or recording fields change.
-constexpr std::string_view version = "CampusTwin.RecordedRun.1";
+constexpr std::string_view version = "CampusTwin.RecordedRun.2";
 constexpr std::size_t max_cache_size = 512 * 1024 * 1024;
 
 // Field order is the local cache format. Files store values, never object memory
@@ -23,7 +23,8 @@ constexpr std::size_t max_cache_size = 512 * 1024 * 1024;
     template<class Archive, class Value> \
     void fields(Archive& ar, Value& v, Type*) { ar(__VA_ARGS__); }
 
-CACHE_FIELDS(ActivitySpec, v.id, v.kind, v.location_id, v.start_minute, v.duration_minutes, v.requires_seat)
+CACHE_FIELDS(ActivitySpec, v.id, v.kind, v.location_id, v.start_minute, v.duration_minutes,
+             v.requires_seat, v.after_previous, v.fast_meal_from)
 CACHE_FIELDS(Location, v.id, v.name, v.kind, v.capacity)
 CACHE_FIELDS(Road, v.from, v.to, v.distance_m)
 CACHE_FIELDS(WindowServiceConfig, v.window_id, v.meal_type, v.service_minutes)
@@ -38,12 +39,13 @@ CACHE_FIELDS(ServiceStarted, v.request_id, v.student_id, v.facility_id, v.window
              v.expected_end_at, v.meal_type)
 CACHE_FIELDS(MoveInfo, v.from, v.to, v.depart_at, v.arrive_at, v.distance_m)
 CACHE_FIELDS(StudentSnapshot, v.at, v.student_id, v.state, v.location_id, v.move, v.lunch_facility, v.occupied_seat)
-CACHE_FIELDS(SeatRequest, v.request_id, v.student_id, v.location_id, v.at, v.duration_minutes)
+CACHE_FIELDS(SeatRequest, v.request_id, v.student_id, v.location_id, v.at, v.duration_minutes, v.fixed_until)
 CACHE_FIELDS(SeatGranted, v.request, v.at, v.until)
 CACHE_FIELDS(SeatSnapshot, v.at, v.location_id, v.capacity, v.queued, v.occupied, v.arrived, v.granted,
-             v.released, v.max_queue, v.total_wait_minutes, v.busy_seat_minutes)
+             v.released, v.max_queue, v.total_wait_minutes, v.busy_seat_minutes, v.expired)
 CACHE_FIELDS(ActivityRecord, v.student_id, v.activity, v.destination, v.departed_at, v.arrived_at, v.started_at,
-             v.completed_at, v.distance_m, v.path, v.seat_wait_minutes)
+             v.completed_at, v.distance_m, v.path, v.seat_wait_minutes, v.missed_at,
+             v.meal_received_at, v.effective_meal_minutes)
 CACHE_FIELDS(LunchDecision, v.at, v.student_id, v.policy, v.facility_id, v.destination, v.observed_at,
              v.queue_length, v.distance_m, v.path, v.travel_minutes, v.estimated_wait_minutes,
              v.service_minutes, v.estimated_total_minutes, v.selected, v.reason)

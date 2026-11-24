@@ -25,18 +25,20 @@ public:
     using std::runtime_error::runtime_error;
 };
 
-enum class LocationKind { Teaching, Canteen, Dormitory, Library };
+enum class LocationKind { Teaching, Canteen, Dormitory, Library, Sports };
 enum class StudentState { AtLocation, Moving, Queued, InService, Eating, Finished, WaitingSeat, InActivity };
 enum class LunchPolicy { Fixed, Nearest, Fastest };
-enum class ActivityKind { Class, Study, Rest, Lunch };
+enum class ActivityKind { Class, Study, Rest, Lunch, Sport };
 
 struct ActivitySpec {
     std::string id;
     ActivityKind kind{ActivityKind::Study};
     LocationId location_id; // empty for lunch: chosen by the student's lunch policy
     SimTime start_minute{0}; // appointment start; for lunch, earliest departure
-    SimTime duration_minutes{1}; // occupancy duration; for lunch, eating duration
+    SimTime duration_minutes{1}; // class ends at start + duration; otherwise time spent in the activity
     bool requires_seat{false}; // lunch automatically uses its canteen's seat pool if present
+    bool after_previous{false}; // a rest activity can start as soon as the previous activity ends
+    std::optional<SimTime> fast_meal_from{}; // lunch only: halve duration if pickup is at or after this minute
 };
 
 struct SeatPoolConfig {
@@ -177,6 +179,7 @@ struct SeatRequest {
     LocationId location_id;
     SimTime at{0};
     SimTime duration_minutes{1};
+    std::optional<SimTime> fixed_until{}; // absolute end; do not grant at or beyond this minute
 };
 struct SeatGranted {
     SeatRequest request;
@@ -189,6 +192,7 @@ struct SeatSnapshot {
     std::size_t capacity{0}, queued{0}, occupied{0}, arrived{0}, granted{0}, released{0};
     std::size_t max_queue{0};
     std::int64_t total_wait_minutes{0}, busy_seat_minutes{0};
+    std::size_t expired{0}; // cumulative requests that expired before a grant
 };
 struct ActivityRecord {
     StudentId student_id;
@@ -198,6 +202,7 @@ struct ActivityRecord {
     double distance_m{0};
     std::vector<LocationId> path;
     SimTime seat_wait_minutes{0};
+    std::optional<SimTime> missed_at{}, meal_received_at{}, effective_meal_minutes{};
 };
 
 // A frozen, end-of-minute view. At -1 it represents the initial empty state.

@@ -46,7 +46,7 @@ private:
 
     void require_initialized() const;
     StudentRuntime& find_student(const StudentId& id);
-    void finish_activity(StudentRuntime& student, SimTime now);
+    void finish_activity(StudentRuntime& student, SimTime now, bool missed = false);
     using FacilityStatuses = std::map<FacilityId, FacilityDecisionStatus>;
     const LunchDecision& choose_canteen(const StudentRuntime&, SimTime, const IRouteProvider&,
         const IFacilityAdvisor*, const FacilityStatuses&, std::vector<LunchDecision>&) const;

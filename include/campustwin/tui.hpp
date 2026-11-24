@@ -116,7 +116,7 @@ public:
 
 private:
     enum class PlaybackView { Overview, Scene, Students };
-    enum class LunchPlan { Concentrated, Staggered20, Staggered40 };
+    enum class LunchPlan { Concentrated = 0, Staggered20 = 20, Staggered40 = 40, Staggered60 = 60 };
 
     WorkbenchOptions options_;
     std::istream& in_;

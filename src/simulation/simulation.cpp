@@ -105,7 +105,8 @@ void check_seats(SimTime now, const CampusScenario& scenario,
     for (const auto& s : seats) {
         if (!seen.insert(s.location_id).second || !capacities.count(s.location_id) || s.at != now ||
             capacities.at(s.location_id) != s.capacity || s.occupied > s.capacity ||
-            s.released > s.granted || s.granted > s.arrived || s.queued != s.arrived - s.granted ||
+            s.released > s.granted || s.granted > s.arrived || s.expired > s.arrived - s.granted ||
+            s.queued != s.arrived - s.granted - s.expired ||
             s.occupied != s.granted - s.released || s.queued != waiting[s.location_id] ||
             s.occupied != occupied[s.location_id] || s.total_wait_minutes < 0 || s.busy_seat_minutes < 0)
             throw ValidationError("simulation: inconsistent seat snapshot");
@@ -160,6 +161,7 @@ void SimulationRunner::run(const SimulationSettings& settings,
         // C 释放到期窗口并通知 B；有座位池的食堂在出餐后申请座位。
         const auto completed = facilities.complete_due(now);
         for (const auto& event : completed) students.on_service_completed(event);
+        // C 回收已到期的座位，也移除已经过了入场截止时刻的申请。
         if (seats) seats->release_due(now);
 
         // B 按当前状态推进每个学生的日程，返回本分钟到达食堂的请求。

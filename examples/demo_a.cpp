@@ -22,7 +22,7 @@ void help() {
               << "  road-set FROM TO METERS | road-remove FROM TO\n"
               << "  facility-set ID LOCATION WINDOWS SERVICE_MINUTES\n"
               << "  facility-remove ID | route FROM TO\n"
-              << "KIND: Teaching / Canteen / Dormitory / Library\n"
+              << "KIND: Teaching / Canteen / Dormitory / Library / Sports\n"
               << "Use double quotes around names and paths containing spaces.\n"
               << "new/load/quit reject unsaved edits: save them first.\n";
 }
@@ -75,6 +75,7 @@ LocationKind kind(const std::string& value) {
     if (value == "Canteen") return LocationKind::Canteen;
     if (value == "Dormitory") return LocationKind::Dormitory;
     if (value == "Library") return LocationKind::Library;
+    if (value == "Sports") return LocationKind::Sports;
     throw ValidationError("unknown location kind: " + value);
 }
 const char* kind_name(LocationKind value) {
@@ -83,6 +84,7 @@ const char* kind_name(LocationKind value) {
     case LocationKind::Canteen: return "Canteen";
     case LocationKind::Dormitory: return "Dormitory";
     case LocationKind::Library: return "Library";
+    case LocationKind::Sports: return "Sports";
     }
     throw ValidationError("unknown location kind");
 }

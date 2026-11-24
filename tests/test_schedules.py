@@ -62,21 +62,24 @@ def audit(output, duration, population):
         assert int(row["queued"]) == waiting[(at, loc)]
         assert int(row["occupied"]) == occupied[(at, loc)] <= int(row["capacity"])
         assert int(row["busy_seat_minutes"]) == busy[loc]
-        assert int(row["arrived"]) == int(row["queued"]) + int(row["granted"])
+        assert int(row["arrived"]) == int(row["queued"]) + int(row["granted"]) + int(row["expired"])
         assert int(row["granted"]) == int(row["occupied"]) + int(row["released"])
     by_student = defaultdict(list)
     for row in read(output / "activities.csv"):
         by_student[row["student_id"]].append(row)
-        if row["started_at"]:
+        if row["started_at"] and row["planned_start"]:
             assert int(row["started_at"]) >= int(row["planned_start"])
         if row["completed_at"]:
             assert int(row["completed_at"]) <= duration
-            if row["kind"] != "lunch":
+            if row["kind"] == "class":
+                assert int(row["completed_at"]) == int(row["planned_start"]) + int(row["duration_minutes"])
+            elif row["kind"] != "lunch":
                 assert int(row["completed_at"]) - int(row["started_at"]) == int(row["duration_minutes"])
     for rows in by_student.values():
         for before, after in zip(rows, rows[1:]):
             if after["departed_at"]:
-                assert before["completed_at"] and int(after["departed_at"]) >= int(before["completed_at"])
+                ended = before["completed_at"] or before["missed_at"]
+                assert ended and int(after["departed_at"]) >= int(ended)
 
 
 with tempfile.TemporaryDirectory(prefix="campustwin_schedule_") as temp:
@@ -155,7 +158,50 @@ with tempfile.TemporaryDirectory(prefix="campustwin_schedule_") as temp:
         ROOT / "data/schedules/campus_day.csv", full, 160)
     audit(full, 160, 36)
     records = read(full / "activities.csv")
-    assert len(records) == 216 and all(r["status"] == "completed" for r in records)
-    assert any(r["kind"] == "class" and int(r["start_delay_minutes"]) > 0 for r in records)
+    assert len(records) == 216 and all(r["status"] in ("completed", "missed") for r in records)
+    assert any(r["kind"] == "class" and r["started_at"] and int(r["start_delay_minutes"]) > 0 for r in records)
     assert {r["policy"] for r in read(full / "decisions.csv")} == {"fixed", "nearest", "fastest"}
+
+    # Lunch duration is frozen at pickup, and a classroom queue has an absolute end.
+    with (scene / "locations.csv").open("a", encoding="utf-8") as file:
+        file.write("P,PlayingField,Sports,1\n")
+    with (scene / "roads.csv").open("a", encoding="utf-8") as file:
+        file.write("T,P,60\n")
+    write(scene / "facilities.csv", "id,location_id,window_count,service_minutes\nC,F,1,1\n")
+    write(scene / "seats.csv", "location_id,capacity\nF,1\nT,1\nP,1\n")
+    write(people, original_people.splitlines()[0] + "\n" +
+          "".join(f"{sid},T,C,D,0,60,5\n" for sid in "ABCD"))
+    varied = "".join(
+        f"{sid},1,lunch,lunch,,0,{4 if sid == 'A' else 5},0,4\n"
+        f"{sid},2,class,class,T,6,{10 if sid in 'AC' else 12},1,\n"
+        + (f"{sid},3,exercise,sport,P,16,3,1,\n{sid},4,home,rest,D,,1,0,\n" if sid == "A"
+           else f"{sid},3,home,rest,D,,1,0,\n")
+        for sid in "ABCD"
+    )
+    write(schedule, header.strip() + ",fast_meal_from\n" + varied)
+    fixed = base / "fixed_class_and_meal_threshold"
+    run(scene, people, schedule, fixed)
+    audit(fixed, 30, 4)
+    records = {(r["student_id"], r["activity_id"]): r for r in read(fixed / "activities.csv")}
+    assert [(records[sid, "lunch"]["meal_received_at"], records[sid, "lunch"]["effective_meal_minutes"],
+             records[sid, "lunch"]["completed_at"]) for sid in "ABCD"] == [
+                 ("2", "4", "6"), ("3", "5", "11"), ("4", "3", "14"), ("5", "3", "17")]
+    assert records["B", "lunch"]["seat_wait_minutes"] == "3"
+    assert (records["A", "class"]["started_at"], records["A", "class"]["completed_at"]) == ("7", "16")
+    assert (records["B", "class"]["started_at"], records["B", "class"]["completed_at"],
+            records["B", "class"]["seat_wait_minutes"]) == ("16", "18", "4")
+    assert (records["C", "class"]["status"], records["C", "class"]["missed_at"],
+            records["C", "class"]["seat_wait_minutes"], records["C", "home"]["departed_at"]) == ("missed", "16", "1", "16")
+    assert (records["D", "class"]["status"], records["D", "class"]["missed_at"],
+            records["D", "class"]["arrived_at"]) == ("missed", "18", "18")
+    assert (records["A", "exercise"]["started_at"], records["A", "exercise"]["completed_at"]) == ("17", "20")
+    assert records["A", "home"]["planned_start"] == "" and records["A", "home"]["departed_at"] == "20"
+    snapshots = {(r["at"], r["location_id"]): r for r in read(fixed / "seat_snapshots.csv")}
+    assert snapshots["16", "T"]["expired"] == "1" and snapshots["16", "T"]["occupied"] == "1"
+
+    write(scene / "seats.csv", "location_id,capacity\nT,1\nP,1\n")
+    no_dining_seats = base / "fast_meal_without_seats"
+    run(scene, people, schedule, no_dining_seats)
+    records = {(r["student_id"], r["activity_id"]): r for r in read(no_dining_seats / "activities.csv")}
+    assert (records["C", "lunch"]["meal_received_at"], records["C", "lunch"]["completed_at"]) == ("4", "7")
 print("PASS schedule timelines, seats, delays, conservation, cutoff, repeatability and invalid inputs")

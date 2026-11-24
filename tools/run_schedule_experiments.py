@@ -22,6 +22,7 @@ def analyze(variant, raw, duration, population):
         raise ValueError("missing final student snapshots")
     started_classes = [r for r in activities if r["kind"] == "class" and r["started_at"]]
     total_classes = sum(r["kind"] == "class" for r in activities)
+    missed_classes = sum(r["kind"] == "class" and r["status"] == "missed" for r in activities)
     late_classes = [r for r in started_classes if int(r["start_delay_minutes"]) > 0]
     final_seats = [r for r in seats if int(r["at"]) == duration]
     grants = [r for r in read_csv(raw / "seat_events.csv") if r["type"] == "SeatGranted"]
@@ -33,14 +34,15 @@ def analyze(variant, raw, duration, population):
         if busy != int(s["busy_seat_minutes"]) or len(seen) != int(s["granted"]):
             raise ValueError("seat grants and snapshots disagree: " + location)
         seat_rows.append({"variant": variant, "location_id": location, "capacity": s["capacity"],
-                          "granted": s["granted"], "waiting_at_end": s["queued"], "occupied_at_end": s["occupied"],
+                          "granted": s["granted"], "expired": s["expired"],
+                          "waiting_at_end": s["queued"], "occupied_at_end": s["occupied"],
                           "total_wait_granted": s["total_wait_minutes"], "busy_minutes": busy,
                           "utilization": number(busy / (int(s["capacity"]) * duration))})
     finished = sum(r["state"] == "Finished" for r in final)
     total = {"variant": variant, "students": population, "finished": finished, "unfinished": population - finished,
              "activities": len(activities), "activities_completed": sum(bool(r["completed_at"]) for r in activities),
              "classes_started": len(started_classes), "classes_not_started": total_classes - len(started_classes),
-             "late_classes": len(late_classes),
+             "late_classes": len(late_classes), "missed_classes": missed_classes,
              "class_delay_minutes": sum(int(r["start_delay_minutes"]) for r in started_classes),
              "seat_wait_observed": sum(int(r["seat_wait_minutes"]) for r in activities),
              "distance_m_departed": number(sum(float(r["distance_m"]) for r in activities)),

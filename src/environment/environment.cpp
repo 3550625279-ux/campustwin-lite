@@ -87,6 +87,7 @@ LocationKind parse_kind(const std::string& text, const std::string& context) {
     if (text == "Canteen") return LocationKind::Canteen;
     if (text == "Dormitory") return LocationKind::Dormitory;
     if (text == "Library") return LocationKind::Library;
+    if (text == "Sports") return LocationKind::Sports;
     throw ValidationError(context + ": unknown location kind " + text);
 }
 const char* kind_text(LocationKind kind) {
@@ -95,6 +96,7 @@ const char* kind_text(LocationKind kind) {
         case LocationKind::Canteen: return "Canteen";
         case LocationKind::Dormitory: return "Dormitory";
         case LocationKind::Library: return "Library";
+        case LocationKind::Sports: return "Sports";
     }
     throw ValidationError("invalid location kind");
 }

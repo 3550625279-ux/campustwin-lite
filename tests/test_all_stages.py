@@ -29,7 +29,9 @@ with tempfile.TemporaryDirectory(prefix="campustwin_all_") as temp:
     assert not list(output.rglob("*.html")), "experiment scripts should only generate data"
     day = output / "schedule"
     totals = {r["variant"]: r for r in rows(day / "summary.csv")}
-    assert len(totals) == 4 and all(int(r["finished"]) == 36 and int(r["activities_completed"]) == 216 for r in totals.values())
+    assert len(totals) == 4 and all(int(r["finished"]) == 36 and
+                                    int(r["activities_completed"]) + int(r["missed_classes"]) == 216
+                                    for r in totals.values())
     assert int(totals["study_seats"]["seat_wait_observed"]) < int(totals["baseline"]["seat_wait_observed"])
     baseline = day / "runs/baseline/input"
     for variant in ("dining_seats", "study_seats", "road_detour"):

@@ -51,7 +51,7 @@ def validate(root):
     ids = unique_ids(locations)
     kinds = {r["id"]: r["kind"] for r in locations}
     for row in locations:
-        require(row["kind"] in {"Teaching", "Canteen", "Dormitory", "Library"}, "invalid kind")
+        require(row["kind"] in {"Teaching", "Canteen", "Dormitory", "Library", "Sports"}, "invalid kind")
         require(bool(row["name"]), "empty location name")
         integer(row["capacity"], 1)
     roads = read_rows(scene / "roads.csv", "from,to,distance_m")

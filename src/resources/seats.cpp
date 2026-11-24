@@ -31,6 +31,12 @@ void SeatEngine::release_due(SimTime now) {
             ++pool.stats.released;
             return true;
         }), pool.active.end());
+        pool.queue.erase(std::remove_if(pool.queue.begin(), pool.queue.end(), [&](const auto& request) {
+            if (request.fixed_until != now) return false;
+            present_.erase(request.student_id);
+            ++pool.stats.expired;
+            return true;
+        }), pool.queue.end());
     }
     now_ = now; phase_ = 1;
 }
@@ -45,6 +51,7 @@ void SeatEngine::enqueue(const std::vector<SeatRequest>& requests, SimTime now) 
     for (const auto& r : sorted) {
         if (r.at != now || r.request_id.empty() || r.student_id.empty() || r.duration_minutes <= 0 ||
             static_cast<std::int64_t>(now) + r.duration_minutes > std::numeric_limits<SimTime>::max() ||
+            (r.fixed_until && *r.fixed_until != now + r.duration_minutes) ||
             !pools_.count(r.location_id) || !ids.insert(r.request_id).second || !people.insert(r.student_id).second)
             throw ValidationError("seats: invalid, overflowing or duplicate request");
     }
@@ -62,7 +69,8 @@ std::vector<SeatGranted> SeatEngine::start_ready(SimTime now) {
         const auto& pool = entry.second;
         const auto count = std::min(pool.queue.size(), pool.stats.capacity - pool.active.size());
         for (std::size_t i = 0; i < count; ++i)
-            if (static_cast<std::int64_t>(now) + pool.queue[i].duration_minutes > std::numeric_limits<SimTime>::max())
+            if (!pool.queue[i].fixed_until &&
+                static_cast<std::int64_t>(now) + pool.queue[i].duration_minutes > std::numeric_limits<SimTime>::max())
                 throw ValidationError("seats: occupancy end time overflow");
     }
     std::vector<SeatGranted> result;
@@ -70,7 +78,7 @@ std::vector<SeatGranted> SeatEngine::start_ready(SimTime now) {
         auto& pool = entry.second;
         while (!pool.queue.empty() && pool.active.size() < pool.stats.capacity) {
             auto r = pool.queue.front(); pool.queue.pop_front();
-            SeatGranted g{r, now, static_cast<SimTime>(now + r.duration_minutes)};
+            SeatGranted g{r, now, r.fixed_until ? *r.fixed_until : static_cast<SimTime>(now + r.duration_minutes)};
             pool.active.push_back(g); result.push_back(g);
             ++pool.stats.granted;
             pool.stats.total_wait_minutes += now - r.at;

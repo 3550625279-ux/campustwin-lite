@@ -39,6 +39,8 @@
 namespace campustwin {
 namespace {
 
+constexpr SimTime flagship_dismissal = 210;  // 11:30, measured from 08:00.
+
 namespace ansi {
 constexpr const char* reset = "\x1b[0m";
 constexpr const char* bold = "\x1b[1m";
@@ -214,6 +216,7 @@ const char* kind_zh(LocationKind kind) {
     case LocationKind::Canteen: return "食堂";
     case LocationKind::Dormitory: return "宿舍";
     case LocationKind::Library: return "图书馆";
+    case LocationKind::Sports: return "体育场";
     }
     return "未知";
 }
@@ -224,6 +227,7 @@ const char* kind_en(LocationKind kind) {
     case LocationKind::Canteen: return "Canteen";
     case LocationKind::Dormitory: return "Dormitory";
     case LocationKind::Library: return "Library";
+    case LocationKind::Sports: return "Sports";
     }
     return "Unknown";
 }
@@ -243,6 +247,7 @@ const char* activity_zh(ActivityKind kind) {
     case ActivityKind::Study: return "自习";
     case ActivityKind::Rest: return "休息";
     case ActivityKind::Lunch: return "午餐";
+    case ActivityKind::Sport: return "运动";
     }
     return "未知";
 }
@@ -579,48 +584,44 @@ std::string ConsoleWorkbench::style(const char* ansi_code, const std::string& te
 
 const char* ConsoleWorkbench::lunch_plan_name(LunchPlan plan) {
     switch (plan) {
-    case LunchPlan::Concentrated: return "12:00 集中";
+    case LunchPlan::Concentrated: return "11:30 集中 (0 分钟)";
     case LunchPlan::Staggered20: return "20 分钟错峰";
     case LunchPlan::Staggered40: return "40 分钟错峰";
+    case LunchPlan::Staggered60: return "60 分钟错峰";
     }
     throw ValidationError("未知午餐方案");
 }
 
 void ConsoleWorkbench::apply_lunch_plan(std::vector<StudentSpec>& population, LunchPlan plan) {
-    constexpr SimTime noon = 240;  // 12:00, four hours after the flagship campus opens.
-    for (auto& student : population) {
-        for (auto& activity : student.activities) {
-            if (activity.kind != ActivityKind::Lunch) continue;
-            switch (plan) {
-            case LunchPlan::Concentrated: activity.start_minute = noon; break;
-            case LunchPlan::Staggered20:
-                activity.start_minute = noon + (activity.start_minute - noon) / 2;
-                break;
-            case LunchPlan::Staggered40: break;
-            }
+    std::sort(population.begin(), population.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
+    // Flagship IDs have a fixed width, so text order is also numeric order.
+    for (std::size_t rank = 0; rank < population.size(); ++rank) {
+        const auto offset = rank * static_cast<std::size_t>(plan) / population.size();
+        for (auto& activity : population[rank].activities) {
+            if (activity.kind == ActivityKind::Lunch) activity.start_minute = flagship_dismissal + static_cast<SimTime>(offset);
         }
     }
 }
 
 bool ConsoleWorkbench::choose_flagship() {
     out_ << "\n选择旗舰校园午餐实验 · 9000 人 · 08:00–18:00\n"
-         << "  [1] 12:00 集中出发\n"
-         << "  [2] 20 分钟错峰（12:00–12:19）\n"
-         << "  [3] 40 分钟错峰（12:00–12:39，默认）\n"
+         << "  [1] 0 分钟 · 11:30 集中出发\n"
+         << "  [2] 20 分钟错峰（11:30–11:49）\n"
+         << "  [3] 40 分钟错峰（11:30–12:09，默认）\n"
+         << "  [4] 60 分钟错峰（11:30–12:29）\n"
          << "  [0] 返回主菜单\n";
 
     std::string input;
-    while (prompt_line("午餐方案 [1–3]> ", input)) {
+    while (prompt_line("午餐方案 [1–4]> ", input)) {
         if (input == "0") return false;
-        if (input.empty() || input == "3") {
-            load_flagship(LunchPlan::Staggered40);
+        constexpr LunchPlan plans[] = {LunchPlan::Concentrated, LunchPlan::Staggered20,
+                                      LunchPlan::Staggered40, LunchPlan::Staggered60};
+        int selection = 3;
+        if ((input.empty() || parse_int(input, selection)) && selection >= 1 && selection <= 4) {
+            load_flagship(plans[selection - 1]);
             return true;
         }
-        if (input == "1" || input == "2") {
-            load_flagship(input == "1" ? LunchPlan::Concentrated : LunchPlan::Staggered20);
-            return true;
-        }
-        out_ << "请输入 1、2、3，或 0。\n";
+        out_ << "请输入 1、2、3、4，或 0。\n";
     }
     return false;
 }
@@ -989,8 +990,11 @@ void ConsoleWorkbench::print_run_summary(const RecordedRun& run) const {
          << " | 拥堵峰值时刻: " << style(ansi::bold_yellow, "t=" + std::to_string(run.peak_congestion_minute()) + "m") << '\n';
 
     if (!run.activities.empty()) {
+        const auto missed = std::count_if(run.activities.begin(), run.activities.end(),
+                                          [](const auto& activity) { return activity.missed_at.has_value(); });
         out_ << "  日程统计: 已完成活动 " << run.completed_activities_count() << "/" << run.activities.size()
              << " | 迟到课程数: " << style(ansi::yellow, std::to_string(run.late_classes_count()))
+             << " | 缺课 " << missed
              << " | 课程总延迟: " << run.total_class_delay_minutes() << " 分钟"
              << " | 累计等座总时长: " << run.total_observed_seat_wait() << " 分钟\n";
     }
@@ -1336,7 +1340,9 @@ void ConsoleWorkbench::render_tick_details(const RecordedRun& run, const TickFra
                      << " (" << pad_left(std::to_string(s.queued), 2) << "人, 峰值" << pad_left(std::to_string(s.max_queue), 2) << ")"
                      << " | 累计请求:" << pad_left(std::to_string(s.arrived), 2)
                      << " 已入座:" << pad_left(std::to_string(s.granted), 2)
-                     << " 已释座:" << pad_left(std::to_string(s.released), 2) << '\n';
+                     << " 已释座:" << pad_left(std::to_string(s.released), 2);
+                if (s.expired) out_ << " 已过期:" << s.expired;
+                out_ << '\n';
 
                 const auto& occ_list = seat_occupants[s.location_id];
                 if (occ_list.empty()) {
@@ -1345,7 +1351,7 @@ void ConsoleWorkbench::render_tick_details(const RecordedRun& run, const TickFra
                     std::vector<std::string> occ_tokens;
                     for (std::size_t i = 0; i < std::min<std::size_t>(occ_list.size(), 8); ++i) {
                         const auto& o = occ_list[i];
-                        occ_tokens.push_back(o.student_id + "[" + (o.state == StudentState::Eating ? "就餐" : "自习") +
+                        occ_tokens.push_back(o.student_id + "[" + (o.state == StudentState::Eating ? "就餐" : "活动") +
                                              ",t=" + std::to_string(o.granted_at) + ".." + std::to_string(o.until) + "m]");
                     }
                     print_wrapped_tokens(out_, "      ├─ 当前占座(" + std::to_string(occ_list.size()) + "人): ",
@@ -1518,7 +1524,14 @@ void ConsoleWorkbench::render_tick_details(const RecordedRun& run, const TickFra
             } else {
                 const auto cit = latest_service_done.find(s.student_id);
                 const SimTime start_e = cit != latest_service_done.end() ? cit->second.at : tick;
-                const SimTime end_e = start_e + (sp ? sp->meal_minutes : 5);
+                SimTime duration = sp ? sp->meal_minutes : 5;
+                for (const auto& activity : run.activities) {
+                    if (activity.student_id == s.student_id && activity.effective_meal_minutes) {
+                        duration = *activity.effective_meal_minutes;
+                        break;
+                    }
+                }
+                const SimTime end_e = start_e + duration;
                 detail = "食堂就餐 @" + s.location_id.value_or("?") + " [t=" + std::to_string(start_e) +
                          ".." + std::to_string(end_e) + "m, 剩" + std::to_string(std::max<SimTime>(0, end_e - tick)) + "m]";
             }
@@ -1530,7 +1543,8 @@ void ConsoleWorkbench::render_tick_details(const RecordedRun& run, const TickFra
                     detail = std::string(activity_zh(r.activity.kind)) + ":" + r.activity.id +
                              " [t=" + std::to_string(*r.started_at) + ".." +
                              (r.completed_at ? std::to_string(*r.completed_at) : "?") + "m, " +
-                             (delay > 0 ? ("迟到+" + std::to_string(delay) + "m") : "准点") + "]";
+                             (r.activity.after_previous ? "随前序" :
+                                 delay > 0 ? ("延后+" + std::to_string(delay) + "m") : "准点") + "]";
                     break;
                 }
             }
@@ -1629,9 +1643,11 @@ std::vector<std::string> ConsoleWorkbench::render_tick_event_summary(const Recor
         if (activity.started_at == tick && activity.activity.kind != ActivityKind::Lunch) {
             record(activity_starts, [&] {
                 const SimTime delay = tick - activity.activity.start_minute;
+                const std::string timing = activity.activity.after_previous ? "随前序" :
+                    delay > 0 ? "延后 " + std::to_string(delay) + " 分钟" : "准点";
                 return style(ansi::cyan, "[开始活动] ") + activity.student_id + " 开始 " +
                        activity_zh(activity.activity.kind) + "（" + activity.activity.id + " @" +
-                       activity.destination + "，" + (delay > 0 ? "迟到 " + std::to_string(delay) + " 分钟" : "准点") + "）";
+                       activity.destination + "，" + timing + "）";
             });
         }
         if (activity.completed_at == tick) {
@@ -1639,6 +1655,12 @@ std::vector<std::string> ConsoleWorkbench::render_tick_event_summary(const Recor
                 return style(ansi::green, "[完成活动] ") + activity.student_id + " 完成 " +
                        activity_zh(activity.activity.kind) + "（" + activity.activity.id + " @" +
                        activity.destination + "）";
+            });
+        }
+        if (activity.missed_at == tick) {
+            record(activity_ends, [&] {
+                return style(ansi::yellow, "[缺课] ") + activity.student_id + " 未赶上 " +
+                       activity.activity.id + " @" + activity.destination;
             });
         }
     }
@@ -1845,7 +1867,7 @@ void ConsoleWorkbench::menu_student_inspector() {
                 const auto& r = student_acts[i];
                 const auto opt_t = [](const std::optional<SimTime>& v) { return v ? std::to_string(*v) : "-"; };
                 std::string delay_str = "-";
-                if (r.started_at) {
+                if (r.started_at && !r.activity.after_previous) {
                     const auto diff = *r.started_at - r.activity.start_minute;
                     delay_str = diff > 0 ? style(ansi::bold_yellow, "+" + std::to_string(diff) + "m") : "0m";
                 }
@@ -1855,20 +1877,22 @@ void ConsoleWorkbench::menu_student_inspector() {
                 out_ << "     " << pad_right(std::to_string(i + 1) + "." + r.activity.id, 14)
                      << pad_right(activity_zh(r.activity.kind), 6)
                      << pad_right(r.destination.empty() ? "-" : r.destination, 12)
-                     << pad_left(std::to_string(r.activity.start_minute), 6)
+                     << pad_left(r.activity.after_previous ? "随前序" : std::to_string(r.activity.start_minute), 6)
                      << pad_left(opt_t(r.departed_at), 6)
                      << pad_left(opt_t(r.arrived_at), 6)
                      << pad_left(opt_t(r.started_at), 6)
-                     << pad_left(opt_t(r.completed_at), 6)
+                     << pad_left(r.missed_at ? "缺课" : opt_t(r.completed_at), 6)
                      << pad_left(delay_str, 8)
                      << pad_left(seat_w, 8)
-                     << "  " << join_path(r.path, "->") << '\n';
+                     << "  " << join_path(r.path, "->");
+                if (r.effective_meal_minutes) out_ << " | 实际用餐 " << *r.effective_meal_minutes << "m";
+                out_ << '\n';
             }
         }
 
         // 3. 1:1 Minute-by-Minute Full-Resolution Visual State Strip (60 min per row)
         out_ << "\n  " << style(ansi::bold, "3) 逐分钟 1:1 全分辨率状态时间轴 (0 .. " + std::to_string(run.settings.duration_minutes) + " min)") << '\n';
-        out_ << "     图例: [.]等待 [>]移动 [Q]排队 [S]取餐 [W]等座 [E]就餐 [A]上课/自习 [_]已完成\n";
+        out_ << "     图例: [.]等待 [>]移动 [Q]排队 [S]取餐 [W]等座 [E]就餐 [A]日程活动 [_]已完成\n";
 
         std::vector<StudentSnapshot> timeline;
         timeline.reserve(run.frames.size());
@@ -1933,6 +1957,25 @@ struct StudentLunchOutcome {
     std::vector<ActivityRecord> activities;
 };
 
+struct ActivityTimingCounts {
+    std::size_t total{0}, late{0}, missed{0}, pending{0}, late_arrival{0}, waited{0};
+
+    void add(const ActivityRecord& record) {
+        ++total;
+        if (record.missed_at) ++missed;
+        else if (!record.started_at) ++pending;
+        else if (*record.started_at > record.activity.start_minute) ++late;
+        if (record.arrived_at && *record.arrived_at > record.activity.start_minute) ++late_arrival;
+        if (record.seat_wait_minutes > 0) ++waited;
+    }
+};
+
+struct LunchBatchTiming {
+    StudentId first_id, last_id;
+    std::size_t finished{0};
+    std::int64_t dismissal_to_finish{0};
+};
+
 struct LunchTimingResult {
     std::string label;
     std::map<StudentId, StudentLunchOutcome> students;
@@ -1941,7 +1984,10 @@ struct LunchTimingResult {
     std::optional<double> mean_wait;
     std::optional<SimTime> p90_wait;
     std::size_t started{0}, served{0}, finished{0};
-    std::size_t late_classes{0}, unstarted_classes{0}, late_study{0}, unstarted_study{0};
+    std::size_t lunch_finished{0}, fast_meals{0};
+    std::int64_t release_to_finish{0}, dismissal_to_finish{0};
+    ActivityTimingCounts classes, study, sport;
+    std::vector<LunchBatchTiming> batches;
 };
 
 std::string campus_clock(const std::optional<SimTime>& at) {
@@ -1960,6 +2006,17 @@ LunchTimingResult summarize_lunch_timing(std::string label, RecordedRun run) {
     LunchTimingResult result;
     result.label = std::move(label);
     result.finished = run.finished_students_at(run.settings.duration_minutes);
+    const auto batch_count = std::min<std::size_t>(6, run.population.size());
+    result.batches.resize(batch_count);
+    std::map<StudentId, std::size_t> batch_by_id;
+    for (std::size_t rank = 0; rank < run.population.size(); ++rank) {
+        const auto batch_index = rank * batch_count / run.population.size();
+        const auto& id = run.population[rank].id;
+        batch_by_id.emplace(id, batch_index);
+        auto& batch = result.batches[batch_index];
+        if (batch.first_id.empty()) batch.first_id = id;
+        batch.last_id = id;
+    }
     std::vector<SimTime> waits;
     std::int64_t total_wait = 0;
     std::set<LocationId> dining_pools;
@@ -1993,16 +2050,22 @@ LunchTimingResult summarize_lunch_timing(std::string label, RecordedRun run) {
 
     for (auto& activity : run.activities) {
         auto& person = result.students[activity.student_id];
-        if (activity.activity.kind == ActivityKind::Lunch &&
-            !dining_pools.count(activity.destination)) person.eating_at = person.served_at;
-        if (activity.activity.kind == ActivityKind::Class && activity.activity.id == "afternoon") {
-            if (!activity.started_at) ++result.unstarted_classes;
-            else if (*activity.started_at > activity.activity.start_minute) ++result.late_classes;
+        if (activity.activity.kind == ActivityKind::Lunch) {
+            if (!dining_pools.count(activity.destination)) person.eating_at = person.served_at;
+            if (activity.meal_received_at && activity.activity.fast_meal_from &&
+                *activity.meal_received_at >= *activity.activity.fast_meal_from) ++result.fast_meals;
+            if (activity.completed_at) {
+                ++result.lunch_finished;
+                result.release_to_finish += *activity.completed_at - activity.activity.start_minute;
+                result.dismissal_to_finish += *activity.completed_at - flagship_dismissal;
+                auto& batch = result.batches[batch_by_id.at(activity.student_id)];
+                ++batch.finished;
+                batch.dismissal_to_finish += *activity.completed_at - flagship_dismissal;
+            }
         }
-        if (activity.activity.kind == ActivityKind::Study) {
-            if (!activity.started_at) ++result.unstarted_study;
-            else if (*activity.started_at > activity.activity.start_minute) ++result.late_study;
-        }
+        if (activity.activity.kind == ActivityKind::Class && activity.activity.id == "afternoon") result.classes.add(activity);
+        if (activity.activity.kind == ActivityKind::Study) result.study.add(activity);
+        if (activity.activity.kind == ActivityKind::Sport) result.sport.add(activity);
         person.activities.push_back(std::move(activity));
     }
     result.started = waits.size();
@@ -2018,7 +2081,7 @@ LunchTimingResult summarize_lunch_timing(std::string label, RecordedRun run) {
 void ConsoleWorkbench::menu_lunch_timing_experiment() {
     out_ << "\n午餐实验\n"
          << "  [1] 单方案展示 · 选择一种方案并打开回放\n"
-         << "  [2] 总结果对照 · 比较三种方案及宽错峰参照\n"
+         << "  [2] 总结果对照 · 比较 0 / 20 / 40 / 60 分钟四种方案\n"
          << "  [0] 返回主菜单\n";
     std::string choice;
     if (!prompt_line("选择> ", choice) || choice.empty() || choice == "0") return;
@@ -2041,7 +2104,7 @@ void ConsoleWorkbench::menu_lunch_timing_experiment() {
 
 void ConsoleWorkbench::show_lunch_timing_comparison() {
     out_ << "\n午餐错峰对照 · 旗舰校园\n"
-         << "使用同一批学生、餐品、窗口、座位和课表，只调整计划去吃午餐的时间。\n"
+         << "11:30 统一下课，按学号分批放行。四组共用同一份课表和校园设施。\n"
          << "计算完成后可按学号对比四组完整日程。\n";
     CampusEnvironment campus;
     campus.load_directory(root_ / "data/scenarios/campus_flagship");
@@ -2056,13 +2119,14 @@ void ConsoleWorkbench::show_lunch_timing_comparison() {
         results.push_back(summarize_lunch_timing(label,
             load_or_simulate(campus, population, duration)));
     };
-    for (auto plan : {LunchPlan::Concentrated, LunchPlan::Staggered20, LunchPlan::Staggered40}) {
+    for (auto plan : {LunchPlan::Concentrated, LunchPlan::Staggered20, LunchPlan::Staggered40, LunchPlan::Staggered60}) {
         auto population = baseline;
         apply_lunch_plan(population, plan);
         run_variant(lunch_plan_name(plan), std::move(population));
     }
-    run_variant("宽错峰参照", read_schedules(schedule_dir / "campus_flagship_wide_lunch.csv", baseline));
-
+    const auto mean = [](std::int64_t sum, std::size_t count) {
+        return count ? format_fixed(static_cast<double>(sum) / count, 1) : "-";
+    };
     out_ << "\n各方案汇总 · 截止 18:00\n";
     for (const auto& row : results) {
         out_ << "  " << row.label << " | 全校窗口队列峰值 " << row.peak_queue
@@ -2070,9 +2134,28 @@ void ConsoleWorkbench::show_lunch_timing_comparison() {
              << " | 等窗均值/P90 "
              << (row.mean_wait ? format_fixed(*row.mean_wait, 1) : "-") << '/'
              << minutes_text(row.p90_wait) << " 分（已开始取餐 " << row.started << " 人）\n"
-             << "    已出餐 " << row.served << " | 下午课迟到 " << row.late_classes
-             << "、未开始 " << row.unstarted_classes << " | 自习迟到 " << row.late_study
-             << "、未开始 " << row.unstarted_study << " | 完成全天 " << row.finished << '\n';
+             << "    已出餐 " << row.served << " 人 | 吃完午餐 " << row.lunch_finished
+             << " 人 | 13:00 起快速用餐 " << row.fast_meals
+             << " 人 | 放行至吃完平均 " << mean(row.release_to_finish, row.lunch_finished)
+             << " 分 | 下课至吃完平均 " << mean(row.dismissal_to_finish, row.lunch_finished) << " 分\n"
+             << "    下午课 " << row.classes.total << " 人：迟到 " << row.classes.late
+             << "，缺课 " << row.classes.missed << "，待开始 " << row.classes.pending << '\n'
+             << "    自习 " << row.study.total << " 人：推迟开始 " << row.study.late << "，晚到 "
+             << row.study.late_arrival << "，等位 " << row.study.waited << "，未开始 " << row.study.pending << '\n'
+             << "    运动 " << row.sport.total << " 人：推迟开始 " << row.sport.late << "，晚到 "
+             << row.sport.late_arrival << "，等位 " << row.sport.waited << "，未开始 " << row.sport.pending
+             << " | 完成全天 " << row.finished << '\n';
+    }
+    out_ << "\n按学号段对照 · 下课至吃完平均分钟（已吃完学生）\n"
+         << "  学号段              0分钟    20分钟    40分钟    60分钟\n";
+    for (std::size_t i = 0; i < results.front().batches.size(); ++i) {
+        const auto& group = results.front().batches[i];
+        out_ << "  " << pad_right(group.first_id + "–" + group.last_id, 16);
+        for (const auto& row : results) {
+            const auto& batch = row.batches[i];
+            out_ << pad_left(mean(batch.dismissal_to_finish, batch.finished), 10);
+        }
+        out_ << '\n';
     }
 
     while (true) {
@@ -2088,19 +2171,24 @@ void ConsoleWorkbench::show_lunch_timing_comparison() {
             out_ << "  " << row.label << " | 等窗 " << minutes_text(person.window_wait)
                  << " 分 | 出餐 " << campus_clock(person.served_at)
                  << " | 开始吃饭 " << campus_clock(person.eating_at) << '\n';
-            out_ << "    " << pad_right("活动", 13) << pad_right("地点", 7) << pad_right("计划", 8)
+            out_ << "    " << pad_right("活动", 13) << pad_right("地点", 7) << pad_right("计划", 15)
                  << pad_right("出发", 8) << pad_right("到达", 8) << pad_right("开始", 8)
                  << pad_right("完成", 8) << "等座(分)\n";
             for (const auto& activity : person.activities) {
                 const bool lunch = activity.activity.kind == ActivityKind::Lunch;
+                const auto& spec = activity.activity;
+                std::string planned = spec.after_previous ? "随前序" : campus_clock(spec.start_minute);
+                if (spec.kind == ActivityKind::Class) planned += "–" + campus_clock(spec.start_minute + spec.duration_minutes);
                 out_ << "    " << pad_right(activity.activity.id, 13)
                      << pad_right(activity.destination.empty() ? "-" : activity.destination, 7)
-                     << pad_right(campus_clock(activity.activity.start_minute), 8)
+                     << pad_right(planned, 15)
                      << pad_right(campus_clock(activity.departed_at), 8)
                      << pad_right(campus_clock(activity.arrived_at), 8)
                      << pad_right(campus_clock(lunch ? person.eating_at : activity.started_at), 8)
-                     << pad_right(campus_clock(activity.completed_at), 8)
-                     << activity.seat_wait_minutes << '\n';
+                     << pad_right(activity.missed_at ? "缺课" : campus_clock(activity.completed_at), 8)
+                     << activity.seat_wait_minutes;
+                if (activity.effective_meal_minutes) out_ << " | 实际用餐 " << *activity.effective_meal_minutes << " 分钟";
+                out_ << '\n';
             }
         }
     }
@@ -2146,13 +2234,14 @@ void ConsoleWorkbench::menu_map_and_routes() {
 
     while (true) {
         std::string line;
-        if (!prompt_line("\n输入 '起点ID 终点ID' 查询最短路，或输入 'matrix' 查看教学楼->食堂距离矩阵 (0返回)> ", line)) break;
+        if (!prompt_line("\n输入 '起点ID 终点ID' 查询最短路，或输入 'matrix' 查看校园距离矩阵 (0返回)> ", line)) break;
         if (line.empty() || line == "0" || line == "q") break;
         if (line == "matrix") {
             std::vector<LocationId> origins, targets;
             for (const auto& l : sc.locations) {
                 if (l.kind == LocationKind::Teaching || l.kind == LocationKind::Dormitory) origins.push_back(l.id);
-                if (l.kind == LocationKind::Canteen || l.kind == LocationKind::Library) targets.push_back(l.id);
+                if (l.kind == LocationKind::Canteen || l.kind == LocationKind::Library || l.kind == LocationKind::Sports)
+                    targets.push_back(l.id);
             }
             out_ << "\n  " << pad_right("起点 \\ 终点", 14);
             for (const auto& t : targets) out_ << pad_left(t, 12);
@@ -2268,7 +2357,7 @@ void ConsoleWorkbench::menu_scenario_editor() {
                 std::string id, name, kind_str, cap_str;
                 if (!prompt_line("新地点 ID (如 L_GYM)> ", id) || id.empty()) continue;
                 if (!prompt_line("地点名称 (如 West_Annex)> ", name) || name.empty()) continue;
-                if (!prompt_line("地点类型 (Teaching / Canteen / Dormitory / Library)> ", kind_str)) continue;
+                if (!prompt_line("地点类型 (Teaching / Canteen / Dormitory / Library / Sports)> ", kind_str)) continue;
                 if (!prompt_line("描述容量 (正整数, 如 150)> ", cap_str)) continue;
                 Location loc;
                 loc.id = id;
@@ -2277,7 +2366,8 @@ void ConsoleWorkbench::menu_scenario_editor() {
                 else if (kind_str == "Canteen") loc.kind = LocationKind::Canteen;
                 else if (kind_str == "Dormitory") loc.kind = LocationKind::Dormitory;
                 else if (kind_str == "Library") loc.kind = LocationKind::Library;
-                else throw ValidationError("地点类型必须为 Teaching, Canteen, Dormitory 或 Library");
+                else if (kind_str == "Sports") loc.kind = LocationKind::Sports;
+                else throw ValidationError("地点类型必须为 Teaching, Canteen, Dormitory, Library 或 Sports");
                 std::size_t cap = 0;
                 if (!parse_int(cap_str, cap) || cap == 0) throw ValidationError("容量必须为正整数");
                 loc.capacity = cap;

@@ -45,11 +45,11 @@ int main(int argc, char* argv[]) {
 
         const auto& recorded = observer.recorded_run();
         assert(recorded.frames.size() == 161);
-        assert(recorded.completed_activities_count() == 216);
-        assert(recorded.late_classes_count() == 56);
-        assert(recorded.total_class_delay_minutes() == 954);
-        assert(recorded.total_observed_seat_wait() == 885);
-        assert(recorded.all_finished_minute().has_value() && *recorded.all_finished_minute() == 124);
+        assert(recorded.completed_activities_count() == 180);
+        assert(recorded.late_classes_count() == 20);
+        assert(recorded.total_class_delay_minutes() == 93);
+        assert(recorded.total_observed_seat_wait() == 1053);
+        assert(recorded.all_finished_minute().has_value() && *recorded.all_finished_minute() == 114);
         assert(fs::exists(csv_out / "activities.csv"));
         assert(fs::exists(csv_out / "seat_snapshots.csv"));
     }
@@ -164,39 +164,41 @@ int main(int argc, char* argv[]) {
         std::ofstream(data / "students/campus_flagship.csv")
             << "id,initial_location,lunch_facility,after_meal_location,departure_minute,"
             << "walk_m_per_min,meal_minutes,lunch_policy,meal_type\n"
-            << "S001,L_T1,F_NEAR,L_DORM_N,279,60,6,fixed,rice\n";
+            << "S002,L_T1,F_NEAR,L_DORM_N,230,60,6,fixed,rice\n"
+            << "S001,L_T1,F_NEAR,L_DORM_N,210,60,6,fixed,rice\n";
         std::ofstream(data / "schedules/campus_flagship.csv")
             << "student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat\n"
-            << "S001,1,lunch,lunch,,279,6,0\n";
-        std::ofstream(data / "schedules/campus_flagship_wide_lunch.csv")
-            << "student_id,sequence,activity_id,kind,location_id,start_minute,duration_minutes,requires_seat\n"
-            << "S001,1,lunch,lunch,,190,6,0\n";
+            << "S002,1,lunch,lunch,,230,6,0\n"
+            << "S001,1,lunch,lunch,,210,6,0\n";
         WorkbenchOptions opts;
         opts.data_root = demo_root;
         opts.duration_minutes = 290;
         opts.enable_color = false;
         std::istringstream input("2\nbob\nexample-password\n"
-                                 "3\nS001\n0\n"
-                                 "4\n1\ninvalid\n1\nq\n3\nS001\n0\n"
-                                 "4\n1\n2\nq\n3\nS001\n0\n"
-                                 "4\n2\nS001\n0\n3\nS001\n0\n"
-                                 "4\n1\n3\nq\n7\n1\nbob\nexample-password\n2\nq\n0\n");
+                                 "3\nS002\n0\n"
+                                 "4\n1\ninvalid\n1\nq\n3\nS002\n0\n"
+                                 "4\n1\n2\nq\n3\nS002\n0\n"
+                                 "4\n2\nS002\n0\n3\nS002\n0\n"
+                                 "4\n1\n4\nq\n3\nS002\n0\n7\n1\nbob\nexample-password\n2\nq\n0\n");
         std::ostringstream output;
         const int rc = ConsoleWorkbench(opts, input, output).run();
         const auto result = output.str();
         assert(rc == 0);
         assert(result.find("[8] 导出") == std::string::npos);
         assert(result.find("操作异常") == std::string::npos);
-        assert(result.find("请输入 1、2、3，或 0") != std::string::npos);
-        const auto default_plan = result.find("决策时刻 t=279,");
+        assert(result.find("请输入 1、2、3、4，或 0") != std::string::npos);
+        const auto default_plan = result.find("决策时刻 t=230,");
         const auto selector = result.find("选择旗舰校园午餐实验");
-        const auto concentrated = result.find("决策时刻 t=240,");
-        const auto staggered20 = result.find("决策时刻 t=259,");
+        const auto concentrated = result.find("决策时刻 t=210,");
+        const auto staggered20 = result.find("决策时刻 t=220,");
         const auto comparison = result.find("各方案汇总 · 截止 18:00");
-        const auto unchanged = result.find("决策时刻 t=259,", comparison);
+        const auto unchanged = result.find("决策时刻 t=220,", comparison);
+        const auto staggered60 = result.find("决策时刻 t=240,", unchanged);
         assert(default_plan < selector && selector < concentrated && concentrated < staggered20 &&
-               staggered20 < comparison && comparison < unchanged && unchanged != std::string::npos);
-        assert(result.find("学生 S001 的四种日程", comparison) != std::string::npos);
+               staggered20 < comparison && comparison < unchanged && unchanged < staggered60 &&
+               staggered60 != std::string::npos);
+        assert(result.find("学生 S002 的四种日程", comparison) != std::string::npos);
+        assert(result.find("按学号段对照", comparison) != std::string::npos);
         const auto logout = result.find("已退出登录。");
         assert(logout != std::string::npos);
         assert(result.find("已读取本地仿真结果", logout) != std::string::npos);
@@ -226,7 +228,7 @@ int main(int argc, char* argv[]) {
         assert(text.find("正在计算仿真") == std::string::npos);
         const auto users = temp_dir / "private/accounts.db.users";
         assert(text.find("截止完成人数: 36/36") != std::string::npos);
-        assert(text.find("已完成活动 216/216") != std::string::npos);
+        assert(text.find("已完成活动 180/216") != std::string::npos);
 
         // The uppercase spelling is a different account even on Windows.
         text = session("1\nalice\nexample-password\n7\n2\nAlice\nexample-password\n2\nq\n0\n");
